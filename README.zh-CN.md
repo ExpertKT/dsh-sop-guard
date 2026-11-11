@@ -10,11 +10,13 @@ skill 告诉模型该怎么做，但它管不住模型真的这么做。两种�
 
 ## 安装
 
+还没发到 npm。从仓库装：
+
 ```sh
-npm install dsh-sop-guard
+npm install github:ExpertKT/dsh-sop-guard
 ```
 
-把它加进 profile 的 bundle 列表。插件通过 `cordis.patch.yml` 挂载：
+然后把它加进 profile 的 bundle 列表。插件通过 `cordis.patch.yml` 挂载：
 
 ```yaml
 - insert:

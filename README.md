@@ -12,8 +12,10 @@ This plugin moves the process from the prompt into the tool gate. The model cann
 
 ## Install
 
+Not on npm yet. Install from the repository:
+
 ```sh
-npm install dsh-sop-guard
+npm install github:ExpertKT/dsh-sop-guard
 ```
 
 Then add it to your profile's bundle list. The plugin registers itself through `cordis.patch.yml`:
