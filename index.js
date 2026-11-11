@@ -64,7 +64,7 @@ const RULES = [
   '有些 skill 目录里附带 SOP.json 流程清单：每一步声明允许的工具，shell 步骤必须声明命令白名单，否则该步的 shell 会被拒绝。加载这种 skill 后，改文件、删除、跑命令的工具会按当前步骤的白名单校验。',
   '开始每一步前调用 sop_step({"step":"<当前步骤 id>"}) 申报本步；申报对该步骤持续有效。申报下一步后，新的一步尚未申报，必须再调用一次 sop_step 申报它才能用工具。结束流程调用 sop_step({"step":"done","evidence":"..."})。结束与申报下一步都必须带 evidence（至少 8 个字符）；申报下一步时若本步声明了允许的工具，还需先有一次成功的工具执行记录。提前结束会记入主机日志。',
   '不给参数调用 sop_step 可查看当前流程、步骤与白名单；同时装载多个清单时用 sop_step({"skill":"<名称>"}) 切换生效的流程。被拒绝时的错误信息会写明原因、当前步骤、允许的工具/命令、下一步和清单位置。读取类工具不受限制。当前步骤也会出现在运行时上下文（Current runtime context）里；那份是权威的，拿不准自己在第几步时以它为准。',
-  'run_code 的程序体同样受本步规则约束：程序体里出现 node:fs / node:child_process 等模块字面量时，若本步不允许改文件或有命令白名单，会被拒绝；要改文件、跑命令请用受管工具。标了 witness 的步骤不许改任何东西，但必须先用读取类工具真的看过依据（文件、日志、命令输出），再申报推进——只凭描述推进会被拒绝。清单写错或你不该再受它约束时，让用户运行 /sop off —— 只有用户能解除，你不要尝试绕过校验。',
+  'run_code 的程序体同样受本步规则约束：程序体里出现 node:fs / node:child_process 等模块字面量时，若本步不允许改文件或有命令白名单，会被拒绝；要改文件、跑命令请用受管工具。标了 witness 的步骤不许改任何东西，但必须先用读取类工具看过依据（文件、日志、命令输出），再申报推进——只凭描述推进会被拒绝。清单写错或你不该再受它约束时，让用户运行 /sop off —— 只有用户能解除，你不要尝试绕过校验。',
 ].join('\n')
 
 
@@ -811,7 +811,7 @@ function buildDenial(flow, reason) {
   if (step.commands !== undefined) lines.push(listPatterns(step))
   else if (hasUncheckedShell(step)) lines.push('本步允许 shell 但未声明 commands，该步的 shell 调用会被拒绝。')
   if (step.witness === true && (flow.doneWork ?? 0) === 0) {
-    lines.push('本步标了 witness：必须先真的读文件/日志/命令输出（读取类工具不受白名单限制），再申报推进。')
+    lines.push('本步标了 witness：先读文件/日志/命令输出（读取类工具不受白名单限制），再申报推进。')
   }
   if (next !== undefined) {
     lines.push(`下一步「${next.title}」（id: ${next.id}）；申报下一步需带 evidence 说明本步结果。`)
@@ -879,7 +879,7 @@ function renderStatus(state, pending = []) {
     `本步允许：${listAllowed(step, flow.sop)}。`,
   ]
   if ((flow.doneWork ?? 0) > 0) lines.push(`本步已观察到 ${flow.doneWork} 次成功的工具执行：${observedSummary(flow)}。`)
-  if (step.witness === true && (flow.doneWork ?? 0) === 0) lines.push('本步标了 witness：必须先用读取类工具真的看过依据，才能申报推进。')
+  if (step.witness === true && (flow.doneWork ?? 0) === 0) lines.push('本步标了 witness：先用读取类工具看过依据，才能申报推进。')
   if (step.commands !== undefined) lines.push(listPatterns(step))
   else if (hasUncheckedShell(step)) lines.push('本步允许 shell 但未声明 commands，该步的 shell 调用会被拒绝。')
   if (flow.evidence !== undefined) lines.push(`上一步申报依据：${flow.evidence}`)
@@ -906,7 +906,7 @@ function renderStepContext(state) {
     `本步允许：${listAllowed(step, flow.sop)}`,
   ]
   if (step.witness === true) {
-    parts.push((flow.doneWork ?? 0) > 0 ? '本步要求先读取依据（已观察到读取）' : '本步要求先读取依据：先真的读文件/日志/命令输出，再申报')
+    parts.push((flow.doneWork ?? 0) > 0 ? '本步要求先读取依据（已观察到读取）' : '本步要求先读取依据：先读文件/日志/命令输出，再申报')
   }
   if (step.commands !== undefined) parts.push(`本步命令白名单：${step.commands.map((entry) => entry.source).join(' | ')}`)
   else if (hasUncheckedShell(step)) parts.push('本步允许 shell 但未声明 commands，该步的 shell 调用会被拒绝')

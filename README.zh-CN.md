@@ -73,7 +73,7 @@ npm install github:ExpertKT/dsh-sop-guard
 - `title`：出现在拒信和状态输出里。
 - `tools`：这一步允许的工具名。整个字段省略表示这一步不做工具限制。
 - `commands`：匹配 shell 命令文本的正则。声明了 `pwsh` / `bash` 却不写 `commands`，这一步的所有 shell 调用都会被拒——没有白名单就没有可核对的东西。
-- `witness`：这一步不许改任何东西，但必须先用 `read` / `read_image` / `glob` / `grep` 真的读过东西。顺带读文件的 shell 命令不算。
+- `witness`：这一步不许改任何东西，但必须先用 `read` / `read_image` / `glob` / `grep` 读过东西。顺带读文件的 shell 命令不算。
 
 顶层的 `gatedTools` 数组可以把额外工具名加进闸门的监视范围，对所有步骤生效。
 
@@ -104,7 +104,7 @@ npm install github:ExpertKT/dsh-sop-guard
 - 命令串在引号外按 `;`、`&`、`|`、换行切成段，逐段核对。`2>&1` 认作描述符复制，不切段。
 - 自带命令的 shell（`pwsh -Command "..."`、`bash -c "..."`）核对内层命令，不核对 `pwsh` 这个词。让 shell 从文件或标准输入读命令的直接拒绝——没有可核对的内容。套两层 shell 同样拒绝。
 - `-EncodedCommand`、`-enc` 一律拒绝。
-- 不允许改文件的步骤，挡不住写文件工具，也挡不住 `Set-Content`、`Out-File`、`Remove-Item`、`cp`、`mv`、`mkdir`、`tee`、`dd` 这类命令。
+- 不允许改文件的步骤里，`Set-Content`、`Out-File`、`Remove-Item`、`cp`、`mv`、`mkdir`、`tee`、`dd` 这类命令同样过不去，换条路写文件也不行。
 - `run_code` 的程序体会被扫模块字面量。不允许改文件的步骤里出现 `node:fs` 会被拒；声明了工具的步骤里出现 `node:child_process` 会被拒。
 
 让这个闸门在实际使用中不至于把正常干活也卡死的有三点：
@@ -123,6 +123,8 @@ npm install github:ExpertKT/dsh-sop-guard
 
 **程序体扫描是文本匹配。** 运行时拼出来的模块名，比如 `"node:" + "fs"`，扫不到。
 
+**「等人确认」这类步骤，插件看不见人。** 清单里写着要人先批准才能继续，插件没有可核对的东西：模型申报这一步、过一秒再申报下一步，就走过去了。框架不把批准事件报给插件。这种握手写进提示词或流程里，别写进 `SOP.json`。
+
 **子 agent 继承流程，不继承申报。** 子 agent 从父 agent 的当前位置开始，但要自己重新申报，观察记录也分开算。
 
 **运行时文本只有中文。** 拒信、`sop_step` 的工具说明、系统提示里的规则都是中文写的，因为这套东西最初就是为中文清单做的。英文清单能跑，但模型收到的「你哪里做错了」仍然是中文。改起来就是逐个替换字符串，还没做。
@@ -133,7 +135,7 @@ npm install github:ExpertKT/dsh-sop-guard
 
 ## 状态
 
-`1.0.0`。拒绝路径、命令白名单、evidence 门槛、观察执行门槛都在真实 harness 里对着真清单跑过。运行时上下文播报、`witness` 的读取规则、`run_code` 程序体检查只有单元测试。改代码之后先跑测试：
+`1.0.0`。拒绝路径、命令白名单、evidence 门槛、观察执行门槛在真实 harness 里对着真清单跑过，但跑的是最后几次改动之前的构建。运行时上下文播报、`/sop off`、`witness` 的读取规则、`run_code` 程序体检查只有单元测试。线上验证还欠着，别当成已经验过。改代码之后先跑测试：
 
 ```sh
 node test/guard.test.mjs

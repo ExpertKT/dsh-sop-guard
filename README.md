@@ -104,7 +104,7 @@ Every gated call is checked against the declared step:
 - `write`, `edit`, `delete`, `move`, `copy`, `apply_patch` pass only if the step names them.
 - `pwsh` and `bash` pass only if the step names them *and* every command segment matches the step's patterns.
 - Shell command strings are split on `;`, `&`, `|`, and newlines outside quotes, and each segment is checked. `2>&1` is recognized as a descriptor copy, not a command break.
-- A shell that carries its own command (`pwsh -Command "..."`, `bash -c "..."`) is checked on the inner command, not on the word `pwsh`. A shell told to read its command from a file or standard input is rejected, because there is nothing to check. Two levels of shell nesting is rejected for the same reason.
+- A shell that carries its own command (`pwsh -Command "..."`, `bash -c "..."`) is checked on the inner command, not on the word `pwsh`. A shell told to read its command from a file or standard input is rejected, because there is nothing to check. Two levels of shell nesting are rejected for the same reason.
 - Encoded-command flags (`-EncodedCommand`, `-enc`) are rejected.
 - A step that does not allow file-writing tools cannot reach the same effect through `Set-Content`, `Out-File`, `Remove-Item`, `cp`, `mv`, `mkdir`, `tee`, `dd` and similar.
 - `run_code` program bodies are scanned for module literals. `node:fs` in a step that disallows file writes is rejected. `node:child_process` in a step that declares tools is rejected.
@@ -125,6 +125,8 @@ Read this part before trusting it with anything.
 
 **Program scanning is text matching.** Module names built at runtime — `"node:" + "fs"` — are not caught.
 
+**A "wait for the human" step cannot see the human.** If a checklist has a step whose whole point is that a person approves before work continues, the plugin has nothing to check it against: the model can declare that step and advance it a moment later. Nothing in the harness reports an approval back to a plugin. Write that handshake into your prompt or your process, not into `SOP.json`.
+
 **Subagents inherit the flow, not the declaration.** A child agent starts with the parent's step but has to declare it again, and its observed work is counted separately.
 
 **The runtime text is Chinese.** Denial messages, the `sop_step` description, and the system-prompt rules are all written in Chinese, because the checklists this was built for are Chinese. An English checklist works; the messages telling the model what it did wrong will still be in Chinese. Translating them is a straight find-and-replace, and it is not done yet.
@@ -135,7 +137,7 @@ If you need enforcement that holds against a model actively trying to escape, pu
 
 ## Status
 
-`1.0.0`. The deny path, the command allowlist, the evidence gate, and the observed-work gate were exercised against a real checklist in a live harness. The runtime-context broadcast, the `witness` read rule, and the `run_code` program check shipped with unit tests only. Run the test suite before trusting a change:
+`1.0.0`. The deny path, the command allowlist, the evidence gate, and the observed-work gate were exercised against a real checklist in a live harness, but on a build from before the last few changes. The runtime-context broadcast, `/sop off`, the `witness` read rule, and the `run_code` program check have unit tests only. Treat live testing as still owed. Run the suite before trusting a change:
 
 ```sh
 node test/guard.test.mjs
