@@ -1,24 +1,24 @@
 # dsh-sop-guard
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that turns a skill's `SOP.json` checklist into enforced per-step allowlists. When a skill ships a checklist, the model has to declare which step it is on, and the harness refuses any file write, shell command, or code program that the current step does not allow.
+[English](README.en.md)
 
-The refusal happens before the tool runs. A denied call has no side effects.
+一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件。它把 skill 目录里的 `SOP.json` 清单变成真正的分步白名单：skill 带了清单之后，模型必须先申报自己在第几步，然后每一步允许改文件、跑命令、跑代码的范围，由插件在工具真正执行前卡住。被拒的调用没有副作用。
 
-## Why
+## 解决什么
 
-Skills tell a model what to do. They cannot make it do that. Two failures show up often: the model skips an analysis step and jumps to a confident answer, or it takes the shortest path through a documented process because the shortest path is cheaper. Prompt wording does not fix either one, because a prompt is a suggestion.
+skill 告诉模型该怎么做，但它管不住模型真的这么做。两种失控很常见：跳过分析步骤直接给一个看起来很完整的答案；为了省时间抄近路，绕开清单里写明的必经步骤。这类问题改提示词没用，因为提示词只是建议。
 
-This plugin moves the process from the prompt into the tool gate. The model cannot write a file in a step that does not allow writing.
+这个插件把流程从提示词里搬到工具闸门上。当前步骤不允许写文件，模型就写不进去。
 
-## Install
+## 安装
 
-Not on npm yet. Install from the repository:
+还没发到 npm。从仓库装：
 
 ```sh
 npm install github:ExpertKT/dsh-sop-guard
 ```
 
-Then add it to your profile's bundle list. The plugin registers itself through `cordis.patch.yml`:
+然后把它加进 profile 的 bundle 列表。插件通过 `cordis.patch.yml` 挂载：
 
 ```yaml
 - insert:
@@ -27,16 +27,16 @@ Then add it to your profile's bundle list. The plugin registers itself through `
       config: {}
 ```
 
-Config keys (all optional):
+配置项都不填也能跑：
 
-| Key | Default | Meaning |
+| 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `mode` | `enforce` | `enforce` denies the call. `warn` writes the same denial text to the log and lets the call through. Any other value fails at load. |
-| `stateDir` | `~/.dsh/sop-guard/flows` | Where the armed flow is persisted per session. `false` keeps it in memory only. |
+| `mode` | `enforce` | `enforce` 直接拒绝；`warn` 只把同样的拒绝文本写进日志然后放行。填别的值会在加载时报错，不猜。 |
+| `stateDir` | `~/.dsh/sop-guard/flows` | 流程按会话持久化的位置。填 `false` 只在内存里存。 |
 
-## The checklist
+## 清单
 
-Put `SOP.json` next to a skill's `SKILL.md`. Loading that skill arms the flow for the session.
+把 `SOP.json` 放在 skill 的 `SKILL.md` 旁边。加载这个 skill 就会为当前会话武装流程。
 
 ```json
 {
@@ -44,24 +44,24 @@ Put `SOP.json` next to a skill's `SKILL.md`. Loading that skill arms the flow fo
   "steps": [
     {
       "id": "inspect",
-      "title": "Read the repo state",
+      "title": "看仓库现状",
       "tools": ["pwsh"],
       "commands": ["^git status\\b", "^git branch\\b"]
     },
     {
       "id": "review",
-      "title": "Read the failing test and the module it covers",
+      "title": "读失败的测试和它覆盖的模块",
       "tools": [],
       "witness": true
     },
     {
       "id": "write",
-      "title": "Apply the change",
+      "title": "改代码",
       "tools": ["write", "edit"]
     },
     {
       "id": "commit",
-      "title": "Commit with the conventional message",
+      "title": "提交",
       "tools": ["pwsh"],
       "commands": ["^git add\\b", "^git commit\\b"]
     }
@@ -69,80 +69,80 @@ Put `SOP.json` next to a skill's `SKILL.md`. Loading that skill arms the flow fo
 }
 ```
 
-Step fields:
+步骤字段：
 
-- `id` — lowercase letters, digits, hyphens; up to 24 characters; `done` is reserved.
-- `title` — shown in denial messages and status output.
-- `tools` — the tool names this step allows. Omit it to leave the step ungated.
-- `commands` — regular expressions matched against shell command text. A step that allows `pwsh` or `bash` but omits `commands` rejects every shell call, because there is nothing to check it against.
-- `witness` — the step changes nothing, but the model has to have read something first. One successful `read`, `read_image`, `glob`, or `grep` call satisfies it. A shell that happens to read does not count.
+- `id`：小写字母、数字、连字符，最长 24 字符，`done` 是保留字。
+- `title`：出现在拒信和状态输出里。
+- `tools`：这一步允许的工具名。整个字段省略表示这一步不做工具限制。
+- `commands`：匹配 shell 命令文本的正则。声明了 `pwsh` / `bash` 却不写 `commands`，这一步的所有 shell 调用都会被拒——没有白名单就没有可核对的东西。
+- `witness`：这一步不许改任何东西，但必须先用 `read` / `read_image` / `glob` / `grep` 读过东西。顺带读文件的 shell 命令不算。
 
-A `gatedTools` array at the top level adds tool names to the gate's watch list for every step.
+顶层的 `gatedTools` 数组可以把额外工具名加进闸门的监视范围，对所有步骤生效。
 
-## How the model talks to it
+## 模型怎么配合
 
-The plugin registers one tool, `sop_step`:
+插件只注册一个工具 `sop_step`：
 
-- `sop_step({ step: "inspect" })` declares the current step. The declaration covers the whole step; it is not consumed per call.
-- `sop_step({ step: "review", evidence: "..." })` advances. Evidence is at least 8 characters and describes what the previous step found. If that step declared tools, the harness also requires one observed successful call, so a rejected shell command with a non-zero exit code does not count.
-- `sop_step({ skill: "name" })` switches which armed flow is active.
-- `sop_step({})` returns the current state.
-- `sop_step({ step: "done", evidence: "..." })` ends the flow early. The host logs who ended it, at which step, and why.
+- `sop_step({ step: "inspect" })` 申报当前步骤。申报管整步，不按调用次数消耗。
+- `sop_step({ step: "review", evidence: "..." })` 推进。evidence 至少 8 个字符，写清上一步看到了什么。上一步声明了工具时，还要求宿主真观察到一次成功的执行——所以一条退回码非零的失败命令不算数。
+- `sop_step({ skill: "名称" })` 在多个已装载的清单之间切换。
+- `sop_step({})` 查看当前状态。
+- `sop_step({ step: "done", evidence: "..." })` 提前结束流程。宿主会记下是谁在第几步、用什么理由结束的。
 
-After advancing, the new step is undeclared. The model has to declare it before using a gated tool. Without that rule, one declaration would open every later step.
+推进之后新的一步是未申报状态，得再申报一次才能用工具。少了这条，一次申报就等于放开后面所有步骤。
 
-The model also sees the current step in its runtime context, re-stated whenever the step changes. That is there for the failure this plugin can't gate: a model that forgot a checklist existed reads its own position before the next call.
+当前步骤也会出现在模型的运行时上下文里，步骤一变就重播一遍。这一条针对的是插件管不住的那种情况：模型忘了清单存在，下一次调用前能看到自己在第几步。
 
-## The human escape hatch
+## 人的出口
 
-`/sop` prints the armed flow and its position. `/sop off` drops the flow for that session and deletes its state file. Use it when a checklist is wrong, or when the model is stuck against a rule you wrote badly. Only the human gets this exit.
+`/sop` 打印当前流程和位置。`/sop off` 丢掉这个会话的流程并删掉状态文件。清单写错了，或者模型被一条你写坏的规则顶住时用它。这个出口只留给人。
 
-## What it actually enforces
+## 到底拦住了什么
 
-Every gated call is checked against the declared step:
+每一次受管调用都按当前申报的步骤比对：
 
-- `write`, `edit`, `delete`, `move`, `copy`, `apply_patch` pass only if the step names them.
-- `pwsh` and `bash` pass only if the step names them *and* every command segment matches the step's patterns.
-- Shell command strings are split on `;`, `&`, `|`, and newlines outside quotes, and each segment is checked. `2>&1` is recognized as a descriptor copy, not a command break.
-- A shell that carries its own command (`pwsh -Command "..."`, `bash -c "..."`) is checked on the inner command, not on the word `pwsh`. A shell told to read its command from a file or standard input is rejected, because there is nothing to check. Two levels of shell nesting are rejected for the same reason.
-- Encoded-command flags (`-EncodedCommand`, `-enc`) are rejected.
-- A step that does not allow file-writing tools cannot reach the same effect through `Set-Content`, `Out-File`, `Remove-Item`, `cp`, `mv`, `mkdir`, `tee`, `dd` and similar.
-- `run_code` program bodies are scanned for module literals. `node:fs` in a step that disallows file writes is rejected. `node:child_process` in a step that declares tools is rejected.
+- `write`、`edit`、`delete`、`move`、`copy`、`apply_patch` 只有在步骤里点名时才放行。
+- `pwsh`、`bash` 要求步骤点名，并且每一段命令都命中这一步的正则。
+- 命令串在引号外按 `;`、`&`、`|`、换行切成段，逐段核对。`2>&1` 认作描述符复制，不切段。
+- 自带命令的 shell（`pwsh -Command "..."`、`bash -c "..."`）核对内层命令，不核对 `pwsh` 这个词。让 shell 从文件或标准输入读命令的直接拒绝——没有可核对的内容。套两层 shell 同样拒绝。
+- `-EncodedCommand`、`-enc` 一律拒绝。
+- 不允许改文件的步骤里，`Set-Content`、`Out-File`、`Remove-Item`、`cp`、`mv`、`mkdir`、`tee`、`dd` 这类命令同样过不去，换条路写文件也不行。
+- `run_code` 的程序体会被扫模块字面量。不允许改文件的步骤里出现 `node:fs` 会被拒；声明了工具的步骤里出现 `node:child_process` 会被拒。
 
-Three things make the gate survivable in practice:
+让这个闸门在实际使用中不至于把正常干活也卡死的有三点：
 
-- Denials name the step, the reason, the allowed tools, the allowed commands, the next step, and the checklist path.
-- A denial is raised before the tool body runs, so nothing is half-written.
-- Advancing needs evidence *and* observed work, so the model cannot walk through a flow by declaring steps without doing them.
+- 拒信写清步骤、原因、允许的工具、允许的命令、下一步和清单路径。
+- 拒绝发生在工具执行之前，不会留半截文件。
+- 推进既要 evidence，也要宿主真观察到成功执行。只申报不干活，走不完流程。
 
-## What it is not
+## 它不是什么
 
-Read this part before trusting it with anything.
+这一段请在信任它之前读完。
 
-**It is not a sandbox.** The command check is lexical. It looks at the command text the model wrote, not at what that command does after expansion. `$HOME` expands after the check. A script file the model wrote earlier can do anything the step allowed the write tool for.
+**它不是沙箱。** 命令核对是词法层的，看的是模型写下的命令文本，不是展开之后真正跑的东西。`$HOME` 是在核对之后才展开的。模型先前用写文件工具写下的脚本，运行时想干什么干什么。
 
-**`evidence` is a self-report.** The plugin can prove a tool ran. It cannot prove the model read the right file, or that its stated conclusion follows from what it read. `witness` raises the bar from "any tool succeeded" to "a read tool succeeded", which is a smaller hole, not a closed one. A model that wants to pass can pass by calling `read` on any file.
+**`evidence` 是自述。** 插件能证明某个工具跑过，证明不了模型读的是不是该读的文件，也证明不了它的结论是从读到的内容推出来的。`witness` 把门槛从「有工具成功」抬到「有读取工具成功」，这是把洞改小，不是堵上。想混过去的模型随便 `read` 一个文件就能过。
 
-**Program scanning is text matching.** Module names built at runtime — `"node:" + "fs"` — are not caught.
+**程序体扫描是文本匹配。** 运行时拼出来的模块名，比如 `"node:" + "fs"`，扫不到。
 
-**A "wait for the human" step cannot see the human.** If a checklist has a step whose whole point is that a person approves before work continues, the plugin has nothing to check it against: the model can declare that step and advance it a moment later. Nothing in the harness reports an approval back to a plugin. Write that handshake into your prompt or your process, not into `SOP.json`.
+**「等人确认」这类步骤，插件看不见人。** 清单里写着要人先批准才能继续，插件没有可核对的东西：模型申报这一步、过一秒再申报下一步，就走过去了。框架不把批准事件报给插件。这种握手写进提示词或流程里，别写进 `SOP.json`。
 
-**Subagents inherit the flow, not the declaration.** A child agent starts with the parent's step but has to declare it again, and its observed work is counted separately.
+**子 agent 继承流程，不继承申报。** 子 agent 从父 agent 的当前位置开始，但要自己重新申报，观察记录也分开算。
 
-**The runtime text is Chinese.** Denial messages, the `sop_step` description, and the system-prompt rules are all written in Chinese, because the checklists this was built for are Chinese. An English checklist works; the messages telling the model what it did wrong will still be in Chinese. Translating them is a straight find-and-replace, and it is not done yet.
+**运行时文本只有中文。** 拒信、`sop_step` 的工具说明、系统提示里的规则都是中文写的，因为这套东西最初就是为中文清单做的。英文清单能跑，但模型收到的「你哪里做错了」仍然是中文。改起来就是逐个替换字符串，还没做。
 
-**Persistence is per session, in one JSON file.** Two processes restoring the same session id are arbitrated by a lock file. A read-only home directory turns persistence off with a warning; the gate keeps working.
+**持久化是每会话一个 JSON 文件。** 两个进程恢复同一个会话 id 时靠锁文件仲裁。家目录不可写会关掉持久化并打一条警告，闸门本身照常工作。
 
-If you need enforcement that holds against a model actively trying to escape, put the allowlist in the OS or in a container. This plugin is for models that are trying to be helpful and sometimes cut corners.
+如果你要的是「挡住一个主动想逃的模型」，请把允许名单放进操作系统或容器里。这个插件面向的是想好好干活、偶尔抄近路的模型。
 
-## Status
+## 状态
 
-`1.0.0`. The deny path, the command allowlist, the evidence gate, and the observed-work gate were exercised against a real checklist in a live harness, but on a build from before the last few changes. The runtime-context broadcast, `/sop off`, the `witness` read rule, and the `run_code` program check have unit tests only. Treat live testing as still owed. Run the suite before trusting a change:
+`1.0.0`。拒绝路径、命令白名单、evidence 门槛、观察执行门槛在真实 harness 里对着真清单跑过，但跑的是最后几次改动之前的构建。运行时上下文播报、`/sop off`、`witness` 的读取规则、`run_code` 程序体检查只有单元测试。线上验证还欠着，别当成已经验过。改代码之后先跑测试：
 
 ```sh
 node test/guard.test.mjs
 ```
 
-## License
+## 许可证
 
-MIT.
+MIT。

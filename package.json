@@ -1,7 +1,7 @@
 {
   "name": "dsh-sop-guard",
   "version": "1.0.0",
-  "description": "A DeepSeek Harness plugin that turns a skill's SOP.json checklist into enforced per-step tool and command allowlists.",
+  "description": "把 skill 目录里的 SOP.json 变成真正的分步白名单：模型必须先申报自己在第几步，改文件、跑命令、跑代码的范围由插件在工具执行前卡住。",
   "type": "module",
   "exports": {
     ".": "./index.js",
@@ -11,7 +11,7 @@
     "index.js",
     "cordis.patch.yml",
     "README.md",
-    "README.zh-CN.md",
+    "README.en.md",
     "LICENSE"
   ],
   "keywords": [
@@ -20,7 +20,9 @@
     "deepseek-harness",
     "sop",
     "agent-workflow",
-    "tool-gate"
+    "tool-gate",
+    "流程管控",
+    "技能"
   ],
   "license": "MIT",
   "repository": {
@@ -39,7 +41,7 @@
   },
   "meta": {
     "title": "SOP Guard",
-    "description": "Checks mutating tool calls against the current SOP step's tool and command allowlist. A declaration lasts the whole step; advancing needs evidence and observed work."
+    "description": "按当前 SOP 步骤的工具与命令白名单核对每一次受管调用。申报管整步；推进既要有 evidence，也要宿主真观察到执行。"
   },
   "dsh": {
     "bundle": {

@@ -925,7 +925,7 @@ try {
   // A checklist printed in a README is documentation only if it still parses
   // and still gates: a schema change that invalidates the example would
   // otherwise ship silently. Both languages carry the same example.
-  for (const file of ['../README.md', '../README.zh-CN.md']) {
+  for (const file of ['../README.md', '../README.en.md']) {
     const readme = readFileSync(new URL(file, import.meta.url), 'utf8')
     const example = /```json\r?\n([\s\S]*?)\r?\n```/.exec(readme)
     assert.ok(example !== null, `${file} must contain a json checklist example`)
