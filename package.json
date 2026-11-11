@@ -20,9 +20,7 @@
     "deepseek-harness",
     "sop",
     "agent-workflow",
-    "tool-gate",
-    "流程管控",
-    "技能"
+    "tool-gate"
   ],
   "license": "MIT",
   "repository": {
