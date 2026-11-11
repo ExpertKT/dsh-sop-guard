@@ -199,6 +199,23 @@ function flowFromJson(json) {
   }
 }
 
+/** Rename with a short retry: Windows rejects the replacement while another
+ * handle (an indexer, a virus scanner, the previous read) is still open on the
+ * target, and the handle clears within milliseconds. Without the retry a
+ * perfectly good save is dropped and a resumed session rewinds a step. */
+async function renameWithRetry(from, to, attempts = 5) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rename(from, to)
+      return
+    } catch (error) {
+      const transient = error.code === 'EPERM' || error.code === 'EBUSY' || error.code === 'EACCES'
+      if (!transient || attempt >= attempts) throw error
+      await new Promise((resolve) => setTimeout(resolve, 10 * attempt))
+    }
+  }
+}
+
 /** Persist the armed flow so a resumed session continues where it stopped.
  * The write is atomic (temp file + rename) and guarded by a lock file, so two
  * processes restoring the same session cannot leave a half-written or
@@ -238,7 +255,7 @@ async function saveFlows(stateDir, key, state) {
   const temp = `${path}.${process.pid}.tmp`
   try {
     await writeFile(temp, JSON.stringify(payload), 'utf8')
-    await rename(temp, path)
+    await renameWithRetry(temp, path)
   } catch (error) {
     console.warn(`sop-guard: cannot persist the armed flow for "${key}": ${error.message}`)
     await rm(temp, { force: true })

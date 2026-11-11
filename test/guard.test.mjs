@@ -922,6 +922,33 @@ try {
   plainReasonCtx.declare(plainReasonAgent, { step: 'think' })
   assert.match(plainReasonCtx.declare(plainReasonAgent, { step: 'write-it', evidence: '想清楚了方案再动手' }), /第 2\/2 步/)
 
+  // A checklist printed in a README is documentation only if it still parses
+  // and still gates: a schema change that invalidates the example would
+  // otherwise ship silently. Both languages carry the same example.
+  for (const file of ['../README.md', '../README.zh-CN.md']) {
+    const readme = readFileSync(new URL(file, import.meta.url), 'utf8')
+    const example = /```json\r?\n([\s\S]*?)\r?\n```/.exec(readme)
+    assert.ok(example !== null, `${file} must contain a json checklist example`)
+    const readmeDir = await mkdtemp(join(tmpdir(), 'sop-guard-readme-'))
+    dirs.push(readmeDir)
+    await writeFile(join(readmeDir, 'SOP.json'), example[1], 'utf8')
+    const readmeCtx = makeCtx()
+    const readmeAgent = { id: 'agent-readme' }
+    assert.deepEqual(await readmeCtx.emitSkill(readmeAgent, 'demo', readmeDir), [], `${file} must not be reported broken`)
+    assert.match(readmeCtx.declare(readmeAgent, {}), /已装载流程：demo/)
+    readmeCtx.declare(readmeAgent, { step: 'inspect' })
+    readmeCtx.emitResult(readmeAgent, 'pwsh', false, { kind: 'foreground', exitCode: 0 })
+    assert.match(readmeCtx.declare(readmeAgent, { step: 'review', evidence: '工作区干净，没有未提交改动' }), /已申报/)
+    readmeCtx.declare(readmeAgent, { step: 'review' })
+    assert.throws(
+      () => readmeCtx.declare(readmeAgent, { step: 'write', evidence: '看过了，可以开始改' }),
+      /要求先真实读取依据/,
+      `${file} documents witness, so the step must require a real read`,
+    )
+    readmeCtx.emitResult(readmeAgent, 'read', false, { content: [{ type: 'text', text: '…' }] })
+    assert.match(readmeCtx.declare(readmeAgent, { step: 'write', evidence: '读完 README 和 package.json' }), /已申报/)
+  }
+
   console.log('sop-guard: all checks passed')
 } finally {
   for (const dir of dirs) await rm(dir, { recursive: true, force: true })
