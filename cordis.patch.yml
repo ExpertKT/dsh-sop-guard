@@ -1,0 +1,4 @@
+- insert:
+    - id: sop-guard
+      name: dsh-sop-guard
+      config: {}

@@ -1,0 +1,9 @@
+node_modules/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Working notes, not part of the package. docs/research/ also holds other
+# projects' README files, which are theirs to publish, not ours.
+docs/

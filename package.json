@@ -1,0 +1,49 @@
+{
+  "name": "dsh-sop-guard",
+  "version": "1.0.0",
+  "description": "A DeepSeek Harness plugin that turns a skill's SOP.json checklist into enforced per-step tool and command allowlists.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "sop",
+    "agent-workflow",
+    "tool-gate"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ExpertKT/dsh-sop-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ExpertKT/dsh-sop-guard/issues"
+  },
+  "homepage": "https://github.com/ExpertKT/dsh-sop-guard#readme",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node test/guard.test.mjs"
+  },
+  "meta": {
+    "title": "SOP Guard",
+    "description": "Checks mutating tool calls against the current SOP step's tool and command allowlist. A declaration lasts the whole step; advancing needs evidence and observed work."
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
