@@ -1019,7 +1019,7 @@ export function apply(ctx, config) {
   const commands = ctx.get?.('commands')
   if (commands !== undefined && typeof commands.register === 'function') {
     commands.register({
-      definitionId: '@local/sop-guard',
+      definitionId: 'dsh-sop-guard',
       name: 'sop',
       description: 'Show the armed SOP flow; "/sop off" disarms it for this session',
       handler: (invocation) => {
