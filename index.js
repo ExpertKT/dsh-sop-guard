@@ -1367,16 +1367,26 @@ export function apply(ctx, config) {
     // A valid checklist supersedes any earlier notice about a broken one.
     notices.delete(key)
     const previous = state.bySkill.get(skillName)
-    // Reloading the same skill refreshes the checklist but keeps the progress
-    // the model already made; re-reading a skill must not silently rewind it.
-    const flow = previous === undefined
-      ? { dir: base.path, sop: loaded.sop, index: 0, declared: false, doneWork: 0, evidence: undefined }
-      : {
-        ...previous,
-        dir: base.path,
-        sop: loaded.sop,
-        index: Math.min(previous.index, loaded.sop.steps.length - 1),
+    // Re-reading an unchanged skill keeps the progress the model already made.
+    // Progress belongs to a step *id*, not a position: if the checklist changed
+    // while it was loaded, a declaration, a read, or a human approval earned on
+    // the old step must not satisfy the different step now at that index. The
+    // process-restart path (restoreFlow) already compares ids; keep reload in
+    // step with it.
+    let flow
+    if (previous === undefined) {
+      flow = { dir: base.path, sop: loaded.sop, index: 0, declared: false, doneWork: 0, evidence: undefined }
+    } else {
+      const index = Math.min(previous.index, loaded.sop.steps.length - 1)
+      const reachedId = previous.sop.steps[previous.index]?.id
+      const same = loaded.sop.steps[index]?.id === reachedId
+      if (same) {
+        flow = { ...previous, dir: base.path, sop: loaded.sop, index }
+      } else {
+        ctx.logger.warn(`sop-guard: the checklist for "${skillName}" changed while it was loaded; restarted at step 1`)
+        flow = { dir: base.path, sop: loaded.sop, index: 0, declared: false, doneWork: 0, observed: [], approved: false, evidence: undefined }
       }
+    }
     state.bySkill.set(skillName, flow)
     state.active = skillName
     sessions.set(key, state)

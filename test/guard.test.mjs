@@ -422,6 +422,71 @@ try {
   await reloadCtx.emitSkill(reloadAgent, 'demo', dir)
   assert.match(reloadCtx.declare(reloadAgent, {}), /第 2\/3 步/)
 
+  // Editing SOP.json while it is loaded must not carry a declaration or
+  // observed work onto a different step id. restoreFlow compares ids on
+  // restart; the in-session reload has to do the same. Reload deliberately
+  // happens while the flow sits on a declared step with work already done:
+  // keeping that state at the same numeric index would let the next gated
+  // call through undeclared.
+  const editedDir = await makeSkill(SOP)
+  dirs.push(editedDir)
+  const editReloadCtx = makeCtx()
+  const editReloadAgent = { id: 'agent-edit-reload' }
+  await editReloadCtx.emitSkill(editReloadAgent, 'demo', editedDir)
+  editReloadCtx.declare(editReloadAgent, { step: 'inspect' })
+  editReloadCtx.emitResult(editReloadAgent, 'pwsh')
+  await writeFile(
+    join(editedDir, 'SOP.json'),
+    JSON.stringify({
+      version: 1,
+      steps: [
+        { id: 'gather', title: '收集材料', tools: ['pwsh'], commands: ['^git status\\b'] },
+        { id: 'review', title: '核对方案', tools: [], witness: true, approval: true },
+        { id: 'commit', title: '提交', tools: ['pwsh'], commands: ['^git commit\\b'] },
+      ],
+    }),
+    'utf8',
+  )
+  await editReloadCtx.emitSkill(editReloadAgent, 'demo', editedDir)
+  assert.match(editReloadCtx.declare(editReloadAgent, {}), /第 1\/3 步「收集材料」/)
+  assert.match(editReloadCtx.stepContext(editReloadAgent), /本步尚未申报：先调用 sop_step/)
+  assert.match(
+    editReloadCtx.warnings.at(-1),
+    /the checklist for "demo" changed while it was loaded; restarted at step 1/,
+  )
+  assert.match(
+    editReloadCtx.guard('pwsh', editReloadAgent, { command: 'git status' }),
+    /本步还没有申报/,
+  )
+  // The reloaded checklist is fully usable: its witness and approval steps
+  // still gate advancing, so a reset does not simply skip the new rules.
+  editReloadCtx.declare(editReloadAgent, { step: 'gather' })
+  editReloadCtx.emitResult(editReloadAgent, 'pwsh')
+  assert.match(
+    editReloadCtx.declare(editReloadAgent, { step: 'review', evidence: '已经收齐材料可以核对' }),
+    /第 2\/3 步/,
+  )
+  editReloadCtx.declare(editReloadAgent, { step: 'review' })
+  // requireApproval runs before requireObservedWork, so approval fires first.
+  assert.throws(
+    () => editReloadCtx.declare(editReloadAgent, { step: 'commit', evidence: '方案已经仔细看过了' }),
+    /必须由用户运行 \/sop approve/,
+  )
+  const editReloadCommand = editReloadCtx.registered.find((entry) => entry.name === 'sop')
+  assert.match(
+    editReloadCommand.handler({ agent: editReloadAgent, rawInput: 'approve' }).text,
+    /已确认当前步骤/,
+  )
+  assert.throws(
+    () => editReloadCtx.declare(editReloadAgent, { step: 'commit', evidence: '人也点头了，可以提交' }),
+    /要求先真实读取依据/,
+  )
+  editReloadCtx.emitResult(editReloadAgent, 'read')
+  assert.match(
+    editReloadCtx.declare(editReloadAgent, { step: 'commit', evidence: '读过了，人也点头了' }),
+    /第 3\/3 步/,
+  )
+
   // A resumed session reuses the agent id with a new instance and can arm again.
   const resumeCtx = makeCtx()
   const resumeAgent = { id: 'agent-resume' }
