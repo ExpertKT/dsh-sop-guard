@@ -10,7 +10,7 @@ description: 演示 SOP Guard 的清单：看仓库、读失败测试、等人�
 同目录的 `SOP.json` 是一份五步清单：
 
 1. `inspect` —— 允许 `pwsh`，但命令必须匹配白名单。
-2. `review` —— `witness: true`，不许改任何东西，必须先用 `read` / `glob` / `grep` 真的读过东西才能推进。
+2. `review` —— `witness: true`，不许改任何东西，必须先用 `read` / `glob` / `grep` 读过东西才能推进。
 3. `await-approval` —— `approval: true`，要人输入 `/sop approve` 才能推进。确认只在内存里，会话恢复后要重新问。
 4. `write` —— 允许 `write` / `edit`。
 5. `commit` —— 允许 `pwsh`，命令白名单是 `git add` / `git commit`。
