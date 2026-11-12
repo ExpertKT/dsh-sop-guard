@@ -59,6 +59,6 @@ skill 里写了流程，模型可能忘：跳过分析直接给答案，或者�
 
 ## 测试
 
-`node test/guard.test.mjs` 用一份假 Cordis 上下文跑全套，不依赖运行中的 DSH。它会抽两份 README 里的 JSON 示例写进临时 `SOP.json` 真装载、真走完，也会核对 `examples/sop-demo/` 与示例结构一致——文档里的清单不能悄悄失效。CI 在 Node 22 / 24 上跑 `node --check` 与 `npm test`。
+`node test/guard.test.mjs` 用一份假 Cordis 上下文跑全套，不依赖运行中的 DSH。它会抽两份 README 里的 JSON 示例写进临时 `SOP.json` 真装载、真走完，也会核对 `examples/sop-demo/` 与示例结构一致——文档里的清单不能悄悄失效。CI 在 Node 22 / 24 上跑 `node --check` 与 `npm test`。测试脚本、示例、两份 README 都打进 npm 包，装完 `node node_modules/dsh-sop-guard/test/guard.test.mjs` 能直接跑，不用再 clone 仓库。
 
 线上验证欠着：第 13 批之后的多数改动只有单元测试，还没在运行中的 DSH 里从头走完一条完整清单。

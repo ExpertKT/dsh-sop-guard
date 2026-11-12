@@ -145,13 +145,13 @@ npm install github:ExpertKT/dsh-sop-guard
 
 ## 状态
 
-`1.0.0`。拒绝路径、命令白名单、evidence 门槛、观察执行门槛在真实 harness 里对着真清单跑过，但跑的是最后几次改动之前的构建。运行时上下文播报、`/sop off`、`/sop approve`、`witness` 的读取规则、`run_code` 程序体检查只有单元测试。线上验证还欠着，别当成已经验过。改代码之后先跑测试：
+`1.0.0`。拒绝路径、命令白名单、evidence 门槛、观察执行门槛在真实 harness 里对着真清单跑过，但跑的是最后几次改动之前的构建。运行时上下文播报、`/sop off`、`/sop approve`、`witness` 的读取规则、`run_code` 程序体检查只有单元测试。线上验证还欠着，别当成已经验过。改代码之后从仓库副本先跑测试：
 
 ```sh
 node test/guard.test.mjs
 ```
 
-设计取舍和已知边界写在 [DESIGN.md](DESIGN.md)。`examples/sop-demo/` 里有一份能直接加载的 skill 和清单，测试会核对它和 README 示例一致。
+设计取舍和已知边界写在 [DESIGN.md](DESIGN.md)。`examples/sop-demo/` 里有一份能直接加载的 skill 和清单，测试会核对它和 README 示例一致。测试与示例也打进 npm 包，装完可以自己跑 `node node_modules/dsh-sop-guard/test/guard.test.mjs`。
 
 ## 许可证
 

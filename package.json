@@ -13,7 +13,10 @@
     "README.md",
     "README.en.md",
     "DESIGN.md",
-    "LICENSE"
+    "LICENSE",
+    "test/guard.test.mjs",
+    "examples/sop-demo/SKILL.md",
+    "examples/sop-demo/SOP.json"
   ],
   "keywords": [
     "dsh",

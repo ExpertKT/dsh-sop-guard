@@ -147,13 +147,13 @@ If you need enforcement that holds against a model actively trying to escape, pu
 
 ## Status
 
-`1.0.0`. The deny path, the command allowlist, the evidence gate, and the observed-work gate were exercised against a real checklist in a live harness, but on a build from before the last few changes. The runtime-context broadcast, `/sop off`, `/sop approve`, the `witness` read rule, and the `run_code` program check have unit tests only. Treat live testing as still owed. Run the suite before trusting a change:
+`1.0.0`. The deny path, the command allowlist, the evidence gate, and the observed-work gate were exercised against a real checklist in a live harness, but on a build from before the last few changes. The runtime-context broadcast, `/sop off`, `/sop approve`, the `witness` read rule, and the `run_code` program check have unit tests only. Treat live testing as still owed. Run the suite from a clone before trusting a change:
 
 ```sh
 node test/guard.test.mjs
 ```
 
-Design decisions and known limits live in [DESIGN.md](DESIGN.md) (Chinese). `examples/sop-demo/` holds a loadable skill and checklist; the suite checks it stays in step with the README examples.
+Design decisions and known limits live in [DESIGN.md](DESIGN.md) (Chinese). `examples/sop-demo/` holds a loadable skill and checklist; the suite checks it stays in step with the README examples. The suite and the example ship in the npm package too; after installing, run `node node_modules/dsh-sop-guard/test/guard.test.mjs` to check your copy.
 
 ## License
 
