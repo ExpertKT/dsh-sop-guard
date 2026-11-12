@@ -922,6 +922,55 @@ try {
   plainReasonCtx.declare(plainReasonAgent, { step: 'think' })
   assert.match(plainReasonCtx.declare(plainReasonAgent, { step: 'write-it', evidence: '想清楚了方案再动手' }), /第 2\/2 步/)
 
+  // An `approval` step is the one gate the model cannot pass by itself: only
+  // a human typing /sop approve sets the flag, and it belongs to one step.
+  const approvalDir = await makeSkill({
+    version: 1,
+    steps: [
+      { id: 'await-approval', title: '等人确认', tools: [], approval: true },
+      { id: 'write-it', title: '动手', tools: ['write'] },
+    ],
+  })
+  dirs.push(approvalDir)
+  const approvalCtx = makeCtx()
+  const approvalAgent = { id: 'agent-approval' }
+  await approvalCtx.emitSkill(approvalAgent, 'approved-flow', approvalDir)
+  approvalCtx.declare(approvalAgent, { step: 'await-approval' })
+  assert.throws(
+    () => approvalCtx.declare(approvalAgent, { step: 'write-it', evidence: '用户已经同意这个方案' }),
+    /必须由用户运行 \/sop approve/,
+  )
+  assert.match(approvalCtx.stepContext(approvalAgent), /让用户运行 \/sop approve/)
+  const sopCommand = approvalCtx.registered.find((entry) => entry.name === 'sop')
+  assert.ok(sopCommand !== undefined, '/sop command must be registered')
+  assert.match(
+    sopCommand.handler({ agent: approvalAgent, rawInput: ' approve ' }).text,
+    /已确认当前步骤/,
+  )
+  assert.match(approvalCtx.declare(approvalAgent, { step: 'write-it', evidence: '用户已确认，开始动手' }), /第 2\/2 步/)
+  // Confirmation is per step: it must not carry into the next one.
+  assert.match(
+    sopCommand.handler({ agent: approvalAgent, rawInput: 'approve' }).text,
+    /没有标 approval/,
+  )
+  // A flow without the field stays freely advanceable (opt-in, not global).
+  const noApprovalDir = await makeSkill({
+    version: 1,
+    steps: [
+      { id: 'think', title: '想一想', tools: [] },
+      { id: 'write-it', title: '动手', tools: ['write'] },
+    ],
+  })
+  dirs.push(noApprovalDir)
+  const noApprovalCtx = makeCtx()
+  const noApprovalAgent = { id: 'agent-no-approval' }
+  await noApprovalCtx.emitSkill(noApprovalAgent, 'no-approval', noApprovalDir)
+  noApprovalCtx.declare(noApprovalAgent, { step: 'think' })
+  assert.match(
+    noApprovalCtx.declare(noApprovalAgent, { step: 'write-it', evidence: '想清楚了方案再动手' }),
+    /第 2\/2 步/,
+  )
+
   // A checklist printed in a README is documentation only if it still parses
   // and still gates: a schema change that invalidates the example would
   // otherwise ship silently. Both languages carry the same example.
@@ -941,13 +990,55 @@ try {
     assert.match(readmeCtx.declare(readmeAgent, { step: 'review', evidence: '工作区干净，没有未提交改动' }), /已申报/)
     readmeCtx.declare(readmeAgent, { step: 'review' })
     assert.throws(
-      () => readmeCtx.declare(readmeAgent, { step: 'write', evidence: '看过了，可以开始改' }),
+      () => readmeCtx.declare(readmeAgent, { step: 'await-approval', evidence: '看过了，可以开始改' }),
       /要求先真实读取依据/,
       `${file} documents witness, so the step must require a real read`,
     )
     readmeCtx.emitResult(readmeAgent, 'read', false, { content: [{ type: 'text', text: '…' }] })
-    assert.match(readmeCtx.declare(readmeAgent, { step: 'write', evidence: '读完 README 和 package.json' }), /已申报/)
+    assert.match(readmeCtx.declare(readmeAgent, { step: 'await-approval', evidence: '读完 README 和 package.json' }), /已申报/)
+    readmeCtx.declare(readmeAgent, { step: 'await-approval' })
+    assert.throws(
+      () => readmeCtx.declare(readmeAgent, { step: 'write', evidence: '方案已经给她看过了' }),
+      /必须由用户运行 \/sop approve/,
+      `${file} documents approval, so the step must wait for a human`,
+    )
+    const readmeSop = readmeCtx.registered.find((entry) => entry.name === 'sop')
+    assert.match(
+      readmeSop.handler({ agent: readmeAgent, rawInput: 'approve' }).text,
+      /已确认当前步骤/,
+    )
+    assert.match(readmeCtx.declare(readmeAgent, { step: 'write', evidence: '她点头了，开始改' }), /已申报/)
   }
+
+  // Both READMEs document the approval gate, so both examples must carry it.
+  for (const file of ['../README.md', '../README.en.md']) {
+    const readme = readFileSync(new URL(file, import.meta.url), 'utf8')
+    assert.match(readme, /"approval": true/, `${file} must document the approval field`)
+  }
+
+  // The runnable example must match the structure each README prints. Titles
+  // are translated in the English README, so compare the parsed checklist with
+  // titles stripped: ids, tools, commands, witness and approval must be equal.
+  const exampleSop = readFileSync(new URL('../examples/sop-demo/SOP.json', import.meta.url), 'utf8')
+  const structure = (text) => {
+    const doc = JSON.parse(text)
+    return { version: doc.version, gatedTools: doc.gatedTools, steps: doc.steps.map(({ title, ...rest }) => rest) }
+  }
+  for (const file of ['../README.md', '../README.en.md']) {
+    const readme = readFileSync(new URL(file, import.meta.url), 'utf8')
+    const example = /```json\r?\n([\s\S]*?)\r?\n```/.exec(readme)
+    assert.deepEqual(structure(example[1]), structure(exampleSop), `${file} example drifted from examples/sop-demo/SOP.json`)
+  }
+  const exampleSkill = readFileSync(new URL('../examples/sop-demo/SKILL.md', import.meta.url), 'utf8')
+  assert.match(exampleSkill, /^---\r?\nname: sop-demo\r?\n/m, 'example skill must declare its name')
+  assert.match(exampleSkill, /^description: \S/m, 'example skill must declare a description')
+  const exampleDir = await mkdtemp(join(tmpdir(), 'sop-guard-example-'))
+  dirs.push(exampleDir)
+  await writeFile(join(exampleDir, 'SOP.json'), exampleSop, 'utf8')
+  const exampleCtx = makeCtx()
+  const exampleAgent = { id: 'agent-example' }
+  assert.deepEqual(await exampleCtx.emitSkill(exampleAgent, 'sop-demo', exampleDir), [])
+  assert.match(exampleCtx.declare(exampleAgent, {}), /已装载流程：sop-demo/)
 
   console.log('sop-guard: all checks passed')
 } finally {

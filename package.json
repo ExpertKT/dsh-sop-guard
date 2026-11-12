@@ -12,6 +12,7 @@
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
+    "DESIGN.md",
     "LICENSE"
   ],
   "keywords": [

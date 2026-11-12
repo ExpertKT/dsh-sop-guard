@@ -64,7 +64,7 @@ const RULES = [
   '有些 skill 目录里附带 SOP.json 流程清单：每一步声明允许的工具，shell 步骤必须声明命令白名单，否则该步的 shell 会被拒绝。加载这种 skill 后，改文件、删除、跑命令的工具会按当前步骤的白名单校验。',
   '开始每一步前调用 sop_step({"step":"<当前步骤 id>"}) 申报本步；申报对该步骤持续有效。申报下一步后，新的一步尚未申报，必须再调用一次 sop_step 申报它才能用工具。结束流程调用 sop_step({"step":"done","evidence":"..."})。结束与申报下一步都必须带 evidence（至少 8 个字符）；申报下一步时若本步声明了允许的工具，还需先有一次成功的工具执行记录。提前结束会记入主机日志。',
   '不给参数调用 sop_step 可查看当前流程、步骤与白名单；同时装载多个清单时用 sop_step({"skill":"<名称>"}) 切换生效的流程。被拒绝时的错误信息会写明原因、当前步骤、允许的工具/命令、下一步和清单位置。读取类工具不受限制。当前步骤也会出现在运行时上下文（Current runtime context）里；那份是权威的，拿不准自己在第几步时以它为准。',
-  'run_code 的程序体同样受本步规则约束：程序体里出现 node:fs / node:child_process 等模块字面量时，若本步不允许改文件或有命令白名单，会被拒绝；要改文件、跑命令请用受管工具。标了 witness 的步骤不许改任何东西，但必须先用读取类工具看过依据（文件、日志、命令输出），再申报推进——只凭描述推进会被拒绝。清单写错或你不该再受它约束时，让用户运行 /sop off —— 只有用户能解除，你不要尝试绕过校验。',
+  'run_code 的程序体同样受本步规则约束：程序体里出现 node:fs / node:child_process 等模块字面量时，若本步不允许改文件或有命令白名单，会被拒绝；要改文件、跑命令请用受管工具。标了 witness 的步骤不许改任何东西，但必须先用读取类工具看过依据（文件、日志、命令输出），再申报推进——只凭描述推进会被拒绝。标了 approval 的步骤要让用户运行 /sop approve 确认，你申报不了。清单写错或你不该再受它约束时，让用户运行 /sop off —— 只有用户能解除，你不要尝试绕过校验。',
 ].join('\n')
 
 
@@ -120,7 +120,11 @@ function parseSop(document, skillName) {
     if (witness !== undefined && typeof witness !== 'boolean') {
       return { error: `步骤 "${id}" 的 witness 必须是布尔值` }
     }
-    steps.push({ id, title, tools, commands, witness: witness === true })
+    const approval = raw.approval
+    if (approval !== undefined && typeof approval !== 'boolean') {
+      return { error: `步骤 "${id}" 的 approval 必须是布尔值` }
+    }
+    steps.push({ id, title, tools, commands, witness: witness === true, approval: approval === true })
   }
   const extra = document.gatedTools
   if (extra !== undefined && (!Array.isArray(extra) || extra.some((tool) => typeof tool !== 'string'))) {
@@ -167,6 +171,7 @@ function flowToJson(flow) {
       tools: step.tools,
       commands: step.commands === undefined ? undefined : step.commands.map((entry) => entry.source),
       witness: step.witness === true,
+      approval: step.approval === true,
     })),
   }
 }
@@ -185,7 +190,7 @@ function flowFromJson(json) {
         }
       }
     }
-    steps.push({ id: step.id, title: step.title, tools: step.tools, commands, witness: step.witness === true })
+    steps.push({ id: step.id, title: step.title, tools: step.tools, commands, witness: step.witness === true, approval: step.approval === true })
   }
   if (steps.length === 0) return undefined
   return {
@@ -813,6 +818,9 @@ function buildDenial(flow, reason) {
   if (step.witness === true && (flow.doneWork ?? 0) === 0) {
     lines.push('本步标了 witness：先读文件/日志/命令输出（读取类工具不受白名单限制），再申报推进。')
   }
+  if (step.approval === true && flow.approved !== true) {
+    lines.push('本步标了 approval：让用户运行 /sop approve 确认后，你才能申报推进。')
+  }
   if (next !== undefined) {
     lines.push(`下一步「${next.title}」（id: ${next.id}）；申报下一步需带 evidence 说明本步结果。`)
   }
@@ -827,6 +835,19 @@ function requireEvidence(args, kind) {
     throw new Error(`${kind}必须给 evidence（至少 ${EVIDENCE_MIN} 个字符）：说明本步为什么已经完成或中止。`)
   }
   return evidence
+}
+
+function requireApproval(flow, kind) {
+  const step = flow.sop.steps[flow.index]
+  // `approval` is the one thing the model cannot produce on its own: only a
+  // human typing /sop approve sets this flag. ponytail: it lives in memory on
+  // purpose, so a resumed session asks the human again instead of inheriting
+  // a confirmation nobody watched happen.
+  if (step.approval === true && flow.approved !== true) {
+    throw new Error(
+      `本步「${step.id}」标了 approval：必须由用户运行 /sop approve 确认，模型不能自己${kind}；本次拒绝没有副作用。`,
+    )
+  }
 }
 
 function requireObservedWork(flow, kind) {
@@ -880,6 +901,7 @@ function renderStatus(state, pending = []) {
   ]
   if ((flow.doneWork ?? 0) > 0) lines.push(`本步已观察到 ${flow.doneWork} 次成功的工具执行：${observedSummary(flow)}。`)
   if (step.witness === true && (flow.doneWork ?? 0) === 0) lines.push('本步标了 witness：先用读取类工具看过依据，才能申报推进。')
+  if (step.approval === true) lines.push(flow.approved === true ? '本步标了 approval：用户已确认。' : '本步标了 approval：等用户运行 /sop approve 确认。')
   if (step.commands !== undefined) lines.push(listPatterns(step))
   else if (hasUncheckedShell(step)) lines.push('本步允许 shell 但未声明 commands，该步的 shell 调用会被拒绝。')
   if (flow.evidence !== undefined) lines.push(`上一步申报依据：${flow.evidence}`)
@@ -907,6 +929,9 @@ function renderStepContext(state) {
   ]
   if (step.witness === true) {
     parts.push((flow.doneWork ?? 0) > 0 ? '本步要求先读取依据（已观察到读取）' : '本步要求先读取依据：先读文件/日志/命令输出，再申报')
+  }
+  if (step.approval === true) {
+    parts.push(flow.approved === true ? '本步要求用户确认（已确认）' : '本步要求用户确认：让用户运行 /sop approve')
   }
   if (step.commands !== undefined) parts.push(`本步命令白名单：${step.commands.map((entry) => entry.source).join(' | ')}`)
   else if (hasUncheckedShell(step)) parts.push('本步允许 shell 但未声明 commands，该步的 shell 调用会被拒绝')
@@ -961,9 +986,11 @@ function findInherited(ctx, key, sessions) {
         bySkill.set(name, {
           ...flow,
           // The child has not declared anything yet: inheritance arms the same
-          // checklist, it does not grant the permission to use tools.
+          // checklist, it does not grant the permission to use tools, and it
+          // does not carry over a confirmation given to another agent.
           declared: false,
           observed: [],
+          approved: false,
         })
       }
       return { parentKey, state: { active: parentState.active, bySkill, inherited: true } }
@@ -1038,11 +1065,31 @@ export function apply(ctx, config) {
     commands.register({
       definitionId: 'dsh-sop-guard',
       name: 'sop',
-      description: 'Show the armed SOP flow; "/sop off" disarms it for this session',
+      description: 'Show the armed SOP flow; "/sop approve" confirms an approval step; "/sop off" disarms it for this session',
       handler: (invocation) => {
         const state = invocation.agent === undefined
           ? undefined
           : resolveSession(ctx, invocation.agent, sessions)
+        // The model can declare a step, but only a human at the keyboard can
+        // confirm one. This is a distinct action from /sop off: approving
+        // keeps the flow armed and lets the model advance exactly one step.
+        if ((invocation.rawInput ?? '').trim() === 'approve') {
+          if (state === undefined || state.active === null) {
+            return { kind: 'success', text: '当前会话没有生效中的 SOP 流程。' }
+          }
+          const flow = state.bySkill.get(state.active)
+          const step = flow.sop.steps[flow.index]
+          if (step.approval !== true) {
+            return { kind: 'success', text: `当前步骤「${step.id}」没有标 approval，不需要确认。` }
+          }
+          if (flow.approved === true) {
+            return { kind: 'success', text: `当前步骤「${step.id}」已经确认过了。` }
+          }
+          flow.approved = true
+          ctx.logger.warn(`sop-guard: flow "${state.active}" step ${flow.index + 1} (${step.id}) approved by the user ("/sop approve")`)
+          persist(String(invocation.agent.id))
+          return { kind: 'success', text: `已确认当前步骤「${step.title}」（id: ${step.id}）。模型现在可以申报下一步。` }
+        }
         // A checklist that is wrong, or a model stuck against it, must not be
         // something only the model can escape: the human typing here owns the
         // session. Disarming is the escape hatch, and it is audited.
@@ -1089,7 +1136,7 @@ export function apply(ctx, config) {
   ctx.tools.register({
     name: 'sop_step',
     description:
-      '查看或申报当前 SOP 流程：不给参数返回当前流程、步骤与允许的工具/命令；给 step 申报当前步骤或它的下一步（申报下一步会自动推进，必须带 evidence；本步声明了工具时还需先有成功的工具执行；推进后新的一步需要单独申报）；step 为 "done" 结束流程；给 skill 切换生效的流程。申报对该步骤持续有效，不按工具调用次数消耗。',
+      '查看或申报当前 SOP 流程：不给参数返回当前流程、步骤与允许的工具/命令；给 step 申报当前步骤或它的下一步（申报下一步会自动推进，必须带 evidence；本步声明了工具时还需先有成功的工具执行；标了 approval 的步骤还要用户先运行 /sop approve；推进后新的一步需要单独申报）；step 为 "done" 结束流程；给 skill 切换生效的流程。申报对该步骤持续有效，不按工具调用次数消耗。',
     parameters: {
       type: 'object',
       properties: {
@@ -1125,6 +1172,7 @@ export function apply(ctx, config) {
         if (state.active !== null) {
           const flow = state.bySkill.get(state.active)
           const reason = requireEvidence(args, '提前结束流程')
+          requireApproval(flow, '提前结束流程')
           const last = flow.index === flow.sop.steps.length - 1
           ctx.logger.warn(
             `sop-guard: flow "${flow.sop.skill}" ended at step ${flow.index + 1}/${flow.sop.steps.length}` +
@@ -1164,6 +1212,7 @@ export function apply(ctx, config) {
       }
       if (target === next?.id) {
         const evidence = requireEvidence(args, '申报下一步')
+        requireApproval(flow, '申报下一步')
         requireObservedWork(flow, '申报下一步')
         // Check the action against the step the call is about to land on, and
         // do it before anything is written: a rejected call must leave the
@@ -1176,6 +1225,8 @@ export function apply(ctx, config) {
         flow.doneWork = 0
         flow.evidence = evidence
         flow.observed = []
+        // Confirmation belongs to a step, never to the whole flow.
+        flow.approved = false
         // The next step is not declared yet: every step needs its own
         // declaration, otherwise advancing silently carries the permission
         // over and the model can skip sop_step for the rest of the flow.

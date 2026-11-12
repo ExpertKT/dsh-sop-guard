@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "id": "inspect",
+      "title": "看仓库现状",
+      "tools": ["pwsh"],
+      "commands": ["^git status\\b", "^git branch\\b"]
+    },
+    {
+      "id": "review",
+      "title": "读失败的测试和它覆盖的模块",
+      "tools": [],
+      "witness": true
+    },
+    {
+      "id": "await-approval",
+      "title": "把方案给人看，等人点头",
+      "tools": [],
+      "approval": true
+    },
+    {
+      "id": "write",
+      "title": "改代码",
+      "tools": ["write", "edit"]
+    },
+    {
+      "id": "commit",
+      "title": "提交",
+      "tools": ["pwsh"],
+      "commands": ["^git add\\b", "^git commit\\b"]
+    }
+  ]
+}

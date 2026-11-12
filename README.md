@@ -55,6 +55,12 @@ npm install github:ExpertKT/dsh-sop-guard
       "witness": true
     },
     {
+      "id": "await-approval",
+      "title": "把方案给人看，等人点头",
+      "tools": [],
+      "approval": true
+    },
+    {
       "id": "write",
       "title": "改代码",
       "tools": ["write", "edit"]
@@ -76,6 +82,7 @@ npm install github:ExpertKT/dsh-sop-guard
 - `tools`：这一步允许的工具名。整个字段省略表示这一步不做工具限制。
 - `commands`：匹配 shell 命令文本的正则。声明了 `pwsh` / `bash` 却不写 `commands`，这一步的所有 shell 调用都会被拒——没有白名单就没有可核对的东西。
 - `witness`：这一步不许改任何东西，但必须先用 `read` / `read_image` / `glob` / `grep` 读过东西。顺带读文件的 shell 命令不算。
+- `approval`：这一步要人运行 `/sop approve` 才能推进。确认只管这一步，不跨步骤，也不写进状态文件——会话恢复后要重新问人。
 
 顶层的 `gatedTools` 数组可以把额外工具名加进闸门的监视范围，对所有步骤生效。
 
@@ -95,7 +102,7 @@ npm install github:ExpertKT/dsh-sop-guard
 
 ## 人的出口
 
-`/sop` 打印当前流程和位置。`/sop off` 丢掉这个会话的流程并删掉状态文件。清单写错了，或者模型被一条你写坏的规则顶住时用它。这个出口只留给人。
+`/sop` 打印当前流程和位置。清单里标了 `"approval": true` 的步骤，要人运行 `/sop approve` 才放行；没有这一步，模型会停在原地，确认也只对当前步骤有效。`/sop off` 丢掉这个会话的流程并删掉状态文件，清单写错、或者模型被一条你写坏的规则顶住时用它。这两个出口只留给人。
 
 ## 到底拦住了什么
 
@@ -108,6 +115,7 @@ npm install github:ExpertKT/dsh-sop-guard
 - `-EncodedCommand`、`-enc` 一律拒绝。
 - 不允许改文件的步骤里，`Set-Content`、`Out-File`、`Remove-Item`、`cp`、`mv`、`mkdir`、`tee`、`dd` 这类命令同样过不去，换条路写文件也不行。
 - `run_code` 的程序体会被扫模块字面量。不允许改文件的步骤里出现 `node:fs` 会被拒；声明了工具的步骤里出现 `node:child_process` 会被拒。
+- 标了 `approval` 的步骤，人没运行 `/sop approve` 之前，`sop_step` 推进不过去。
 
 让这个闸门在实际使用中不至于把正常干活也卡死的有三点：
 
@@ -125,11 +133,11 @@ npm install github:ExpertKT/dsh-sop-guard
 
 **程序体扫描是文本匹配。** 运行时拼出来的模块名，比如 `"node:" + "fs"`，扫不到。
 
-**「等人确认」这类步骤，插件看不见人。** 清单里写着要人先批准才能继续，插件没有可核对的东西：模型申报这一步、过一秒再申报下一步，就走过去了。框架不把批准事件报给插件。这种握手写进提示词或流程里，别写进 `SOP.json`。
+**确认步骤要人坐在键盘前。** 框架不会把自己的批准结果报给插件，有些安装里批准弹窗还是自动放行的。插件用自己的握手：标了 `"approval": true` 的步骤，人没输入 `/sop approve` 就推进不了。确认按步骤算，只存在内存里，会话恢复后要重新问。插件能证明有人敲了这条命令，证明不了这个人真的看了模型给出的方案。
 
-**子 agent 继承流程，不继承申报。** 子 agent 从父 agent 的当前位置开始，但要自己重新申报，观察记录也分开算。
+**子 agent 继承流程，不继承申报。** 子 agent 从父 agent 的当前位置开始，但要自己重新申报；观察记录和 `/sop approve` 的确认都分开算。
 
-**运行时文本只有中文。** 拒信、`sop_step` 的工具说明、系统提示里的规则都是中文写的，因为这套东西最初就是为中文清单做的。英文清单能跑，但模型收到的「你哪里做错了」仍然是中文。改起来就是逐个替换字符串，还没做。
+**运行时文本是中文。** 拒信、`sop_step` 的工具说明、系统提示里的规则都用中文写，中文是这套东西的首要语言。英文清单能跑，但「你哪里做错了」仍然是中文。这份 README 是中文版，英文那份是配套参考。
 
 **持久化是每会话一个 JSON 文件。** 两个进程恢复同一个会话 id 时靠锁文件仲裁。家目录不可写会关掉持久化并打一条警告，闸门本身照常工作。
 
@@ -137,11 +145,13 @@ npm install github:ExpertKT/dsh-sop-guard
 
 ## 状态
 
-`1.0.0`。拒绝路径、命令白名单、evidence 门槛、观察执行门槛在真实 harness 里对着真清单跑过，但跑的是最后几次改动之前的构建。运行时上下文播报、`/sop off`、`witness` 的读取规则、`run_code` 程序体检查只有单元测试。线上验证还欠着，别当成已经验过。改代码之后先跑测试：
+`1.0.0`。拒绝路径、命令白名单、evidence 门槛、观察执行门槛在真实 harness 里对着真清单跑过，但跑的是最后几次改动之前的构建。运行时上下文播报、`/sop off`、`/sop approve`、`witness` 的读取规则、`run_code` 程序体检查只有单元测试。线上验证还欠着，别当成已经验过。改代码之后先跑测试：
 
 ```sh
 node test/guard.test.mjs
 ```
+
+设计取舍和已知边界写在 [DESIGN.md](DESIGN.md)。`examples/sop-demo/` 里有一份能直接加载的 skill 和清单，测试会核对它和 README 示例一致。
 
 ## 许可证
 
