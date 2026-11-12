@@ -8,7 +8,7 @@ skill 里写了流程，模型可能忘：跳过分析直接给答案，或者�
 
 ## 挂载点
 
-插件只做三件事：`tools.guard` 卡调用、`tools/post-execute` 武装流程、`systemPrompt.context()` 播报当前步骤。
+主线是 `tools.guard` 卡调用、`tools/post-execute` 武装流程、`systemPrompt.context()` 播报当前步骤；下面几个事件负责把状态接住。
 
 | 框架事件 | 用途 | 为什么是这里 |
 |---|---|---|
@@ -29,6 +29,7 @@ skill 里写了流程，模型可能忘：跳过分析直接给答案，或者�
 - 写盘走「临时文件 + `rename` 原子替换」，`${key}.lock` 独占锁挡跨进程并发。Windows 上 `rename` 偶发 `EPERM` / `EBUSY`，只对这些错误短重试几次。
 - 同会话的 `persist` 与「结束流程的删盘」走同一条 `writes` 串行链。删盘不排队会让一次迟到的写把已结束的流程写回来。
 - `restoreFlow` 按**步骤 id** 比对本进程清单与磁盘快照；清单变了就回第 1 步。恢复后一律 `declared: false`、`doneWork: 0`、`observed: []`——申报属于某一步，不跨进程继承。
+- 会话内重新加载同一个 skill 走同一套比对：只按索引留进度的话，改了清单再重载，旧步骤的申报、读取记录、人的确认会挂到同一位置的另一个步骤上。id 对不上就整步清零，回到第 1 步。
 
 `config.mode` 只认 `enforce` / `warn`，别的值在加载时抛错。`warn` 只把同样的拒信写进日志然后放行。`config.stateDir = false` 时完全不落盘。
 
