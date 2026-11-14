@@ -137,7 +137,7 @@ Read this part before trusting it with anything.
 
 **An approval step needs a person at the keyboard.** The harness does not report its own approval decisions to plugins, and on some installs every approval prompt is auto-granted anyway. So the plugin uses its own handshake: a step marked `"approval": true` cannot be advanced until a human types `/sop approve`. The flag is per step and lives only in memory — a resumed session has to ask again. The plugin can prove someone typed the command; it cannot prove that person read what the model showed them.
 
-**Subagents inherit the flow, not the declaration.** A child agent starts with the parent's step but has to declare it again. Observed work and `/sop approve` confirmations are counted separately.
+**Subagents inherit the flow, not the declaration or the work.** A child agent starts with the parent's step but has to declare it again and make its own successful call. Observed work and `/sop approve` confirmations are counted separately.
 
 **The runtime text is Chinese.** Denial messages, the `sop_step` description, and the system-prompt rules are written in Chinese; that is the primary language for this project. An English checklist works, but the messages telling the model what it did wrong stay in Chinese. This README is the English companion, not the primary one.
 

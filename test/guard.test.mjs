@@ -745,6 +745,34 @@ try {
   assert.match(lateCtx.guard('write', lateChild), /本步还没有申报/)
   assert.match(lateCtx.warnings.join('\n'), /inherited the armed SOP flow/)
 
+  {
+    // A child's own step needs its own declaration and its own observed work;
+    // the parent's completed run must not satisfy the child's step, and a
+    // child's advance must not move the parent's flow.
+    const childWorkCtx = makeCtx()
+    const childWorkParent = { id: 'agent-child-work-parent' }
+    const childWorkChild = { id: 'agent-child-work-child' }
+    childWorkCtx.agentState.list = [childWorkParent, childWorkChild]
+    childWorkCtx.agentState.owners.set('agent-child-work-child', childWorkParent)
+    await childWorkCtx.emitSkill(childWorkParent, 'demo', dir)
+    childWorkCtx.declare(childWorkParent, { step: 'inspect' })
+    childWorkCtx.emitResult(childWorkParent, 'pwsh')
+    await childWorkCtx.created(childWorkChild)
+    assert.match(childWorkCtx.declare(childWorkChild, { step: 'inspect' }), /第 1\/3 步/)
+    assert.throws(
+      () => childWorkCtx.declare(childWorkChild, { step: 'propose', evidence: '父 agent 的活不能算我的' }),
+      /没有任何成功的工具执行记录/,
+    )
+    assert.throws(
+      () => childWorkCtx.declare(childWorkChild, { step: 'done', evidence: '父 agent 的活不能算我的' }),
+      /没有任何成功的工具执行记录/,
+    )
+    assert.match(childWorkCtx.declare(childWorkParent, {}), /第 1\/3 步/)
+    childWorkCtx.emitResult(childWorkChild, 'pwsh')
+    assert.match(childWorkCtx.declare(childWorkChild, { step: 'propose', evidence: '我自己跑过了这一步' }), /第 2\/3 步/)
+    assert.match(childWorkCtx.declare(childWorkParent, {}), /第 1\/3 步/)
+  }
+
   // The armed flow is persisted, so a resumed session keeps its place.
   const stateDir = await mkdtemp(join(tmpdir(), 'sop-guard-state-'))
   dirs.push(stateDir)

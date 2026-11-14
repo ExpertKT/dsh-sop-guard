@@ -942,8 +942,8 @@ function renderStepContext(state) {
 
 /** Copy an armed flow from the agent that owns a newly created one.
  * A sub agent works under the same checklist as its parent: it must still
- * declare the step itself, but it must not be able to escape the parent's
- * flow by running in its own session. */
+ * declare the step itself and do its own work, but it must not be able to
+ * escape the parent's flow by running in its own session. */
 function inheritFlow(ctx, agent, sessions) {
   if (agent?.id === undefined) return
   const key = String(agent.id)
@@ -985,15 +985,18 @@ function findInherited(ctx, key, sessions) {
       for (const [name, flow] of parentState.bySkill) {
         bySkill.set(name, {
           ...flow,
-          // The child has not declared anything yet: inheritance arms the same
-          // checklist, it does not grant the permission to use tools, and it
-          // does not carry over a confirmation given to another agent.
+          // The child has not done any work in this step yet: inheritance arms
+          // the same checklist and keeps the parent's place, but the parent's
+          // runs, declaration, and confirmation belong to the parent alone.
+          // The new state is separate, so a child cannot move its parent.
           declared: false,
+          doneWork: 0,
           observed: [],
           approved: false,
+          evidence: undefined,
         })
       }
-      return { parentKey, state: { active: parentState.active, bySkill, inherited: true } }
+      return { parentKey, state: { active: parentState.active, bySkill } }
     }
     currentKey = parentKey
   }
