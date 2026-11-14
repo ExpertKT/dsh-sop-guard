@@ -96,7 +96,7 @@ The plugin registers one tool, `sop_step`:
 - `sop_step({ step: "review", evidence: "..." })` advances. Evidence is at least 8 characters and describes what the previous step found. If that step declared tools, the harness also requires one observed successful call, so a rejected shell command with a non-zero exit code does not count.
 - `sop_step({ skill: "name" })` switches which armed flow is active.
 - `sop_step({})` returns the current state.
-- `sop_step({ step: "done", evidence: "..." })` ends the flow early. The host logs who ended it, at which step, and why.
+- `sop_step({ step: "done", evidence: "..." })` ends the flow early. Ending drops the whole gate, so it has the same bar as advancing: declare the current step, show one successful call in tool-declaring steps, a real read in `witness` steps, and human confirmation in `approval` steps. The host logs who ended it, at which step, and why.
 
 After advancing, the new step is undeclared. The model has to declare it before using a gated tool. Without that rule, one declaration would open every later step.
 
@@ -123,7 +123,7 @@ Three things make the gate survivable in practice:
 
 - Denials name the step, the reason, the allowed tools, the allowed commands, the next step, and the checklist path.
 - A denial is raised before the tool body runs, so nothing is half-written.
-- Advancing needs evidence *and* observed work, so the model cannot walk through a flow by declaring steps without doing them.
+- Advancing and ending both need evidence *and* observed work, so the model cannot walk through a flow, or exit it, by declaring steps without doing them.
 
 ## What it is not
 

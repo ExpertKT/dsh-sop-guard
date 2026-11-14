@@ -38,7 +38,7 @@ skill 里写了流程，模型可能忘：跳过分析直接给答案，或者�
 1. 调用 `sop_step({ step: "<当前 id>" })` 申报。申报对整步有效，不按调用次数消耗。推进之后新一步要重新申报。
 2. 被看管的工具调用进 `tools.guard`：没申报、工具不在本步 `tools`、命令不在 `commands` 白名单、程序体里出现不该有的模块字面量——任一命中就拒。拒信带步骤、原因、申报提示、允许的工具、白名单、下一步、清单位置。
 3. 推进要 `evidence`（≥8 字符）+ 本步至少一次成功的工具执行；标了 `witness` 的步骤只认 `read` / `read_image` / `glob` / `grep`；标了 `approval` 的步骤要人输入 `/sop approve`。
-4. `done` 提前结束也要 evidence 和审计日志。人可以用 `/sop off` 整条解除。
+4. `done` 会丢掉整条闸门，所以它和推进一样：本步已申报 + `evidence` + 观察到的成功执行 + `approval`，并记一条审计日志。人可以用 `/sop off` 整条解除。
 
 `/sop approve` 走框架的 `commands.execute(agent, line, ...)`，生命周期事件写死 `source: { kind: "user" }`。模型的工具调用到不了这里，所以「只有人能确认」成立。确认标记 `approved` 只在内存里，推进后清空，也不写进状态文件——恢复后重新问人。
 

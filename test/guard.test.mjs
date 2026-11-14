@@ -183,6 +183,8 @@ try {
   const exitCtx = makeCtx()
   const exitAgent = { id: 'agent-exit' }
   await exitCtx.emitSkill(exitAgent, 'demo', dir)
+  exitCtx.declare(exitAgent, { step: 'inspect' })
+  exitCtx.emitResult(exitAgent, 'pwsh')
   await exitCtx.emitSkill(exitAgent, 'plain', plainDir)
   assert.match(exitCtx.guard('write', exitAgent), /SOP 未通过检测/)
   const brokenDir = await makeSkill({ version: 2, steps: [] })
@@ -223,6 +225,7 @@ try {
   driftCtx.declare(driftAgent, { step: 'inspect' })
   assert.match(driftCtx.stepContext(driftAgent), /本步已申报/)
   assert.match(driftCtx.stepContext(driftAgent), /下一步「提议方案」/)
+  driftCtx.emitResult(driftAgent, 'pwsh')
   // Ending the last flow stops the broadcast: nothing left to remind about.
   driftCtx.declare(driftAgent, { step: 'done', evidence: '检查完现状，本流程到此结束' })
   assert.equal(driftCtx.stepContext(driftAgent), '')
@@ -260,6 +263,7 @@ try {
   assert.match(multiCtx.declare(multiAgent, { step: 'inspect' }), /第 1\/3 步/)
   assert.match(multiCtx.guard('write', multiAgent), /本步不允许调用 write/)
   assert.throws(() => multiCtx.declare(multiAgent, { skill: 'ghost' }), /尚未装载/)
+  multiCtx.emitResult(multiAgent, 'pwsh')
   assert.match(multiCtx.declare(multiAgent, { step: 'done', evidence: '本流程已完成并切换到另一个' }), /other\(生效中\)/)
   assert.equal(multiCtx.guard('write', multiAgent), undefined)
 
@@ -318,6 +322,8 @@ try {
   const emptyCtx = makeCtx()
   const emptyAgent = { id: 'agent-empty' }
   await emptyCtx.emitSkill(emptyAgent, 'demo', dir)
+  emptyCtx.declare(emptyAgent, { step: 'inspect' })
+  emptyCtx.emitResult(emptyAgent, 'pwsh')
   emptyCtx.declare(emptyAgent, { step: 'done', evidence: '验证已完成，无需继续流程' })
   assert.match(emptyCtx.declare(emptyAgent, {}), /没有生效中的 SOP 流程/)
   assert.throws(() => emptyCtx.declare(emptyAgent, { skill: 'demo' }), /尚未装载/)
@@ -358,17 +364,55 @@ try {
   assert.match(workCtx.declare(workAgent, { step: 'propose', evidence: '分支风格为两段式 type/name' }), /第 2\/3 步/)
   assert.match(workCtx.declare(workAgent, { step: 'create', evidence: '用户已确认分支名 feat/x' }), /第 3\/3 步/)
 
-  // `done` is not a one-click escape hatch: it needs a reason, real work in
-  // tool-declaring steps, and an audit log entry.
+  // `done` drops the whole gate, so it is no cheaper than advancing: the
+  // step must be declared, tool-declaring steps need observed work, and the
+  // exit still leaves an audit log entry.
   const bailCtx = makeCtx()
   const bailAgent = { id: 'agent-bail' }
   await bailCtx.emitSkill(bailAgent, 'demo', dir)
+  assert.throws(
+    () => bailCtx.declare(bailAgent, { step: 'done', evidence: '用户取消，无需继续流程' }),
+    /还没有申报/,
+  )
   bailCtx.declare(bailAgent, { step: 'inspect' })
   assert.throws(() => bailCtx.declare(bailAgent, { step: 'done' }), /必须给 evidence/)
-  // An intentional exit is allowed without fabricating work; it is auditable.
+  assert.throws(
+    () => bailCtx.declare(bailAgent, { step: 'done', evidence: '用户取消，无需继续流程' }),
+    /成功的工具执行记录/,
+  )
+  bailCtx.emitResult(bailAgent, 'pwsh')
   assert.match(bailCtx.declare(bailAgent, { step: 'done', evidence: '用户取消，无需继续流程' }), /没有生效中的 SOP 流程/)
   assert.match(bailCtx.warnings.join('\n'), /early exit/)
   assert.equal(bailCtx.guard('write', bailAgent), undefined)
+
+  // A reasoning-only step has no work to observe, but `done` still needs its
+  // declaration; a witness step still needs a real read.
+  const reasonDir = await makeSkill({ version: 1, steps: [{ id: 'think', title: '想一想', tools: [] }] })
+  dirs.push(reasonDir)
+  const reasonCtx = makeCtx()
+  const reasonAgent = { id: 'agent-reason-exit' }
+  await reasonCtx.emitSkill(reasonAgent, 'reasoned', reasonDir)
+  assert.throws(
+    () => reasonCtx.declare(reasonAgent, { step: 'done', evidence: '想清楚了，流程到此结束' }),
+    /还没有申报/,
+  )
+  reasonCtx.declare(reasonAgent, { step: 'think' })
+  assert.match(reasonCtx.declare(reasonAgent, { step: 'done', evidence: '想清楚了，流程到此结束' }), /没有生效中的 SOP 流程/)
+  const witnessExitDir = await makeSkill({
+    version: 1,
+    steps: [{ id: 'review', title: '读依据', tools: [], witness: true }],
+  })
+  dirs.push(witnessExitDir)
+  const witnessExitCtx = makeCtx()
+  const witnessExitAgent = { id: 'agent-witness-exit' }
+  await witnessExitCtx.emitSkill(witnessExitAgent, 'witnessed-exit', witnessExitDir)
+  witnessExitCtx.declare(witnessExitAgent, { step: 'review' })
+  assert.throws(
+    () => witnessExitCtx.declare(witnessExitAgent, { step: 'done', evidence: '已经看过相关材料了' }),
+    /要求先真实读取依据/,
+  )
+  witnessExitCtx.emitResult(witnessExitAgent, 'read', false, { content: [{ type: 'text', text: '…' }] })
+  assert.match(witnessExitCtx.declare(witnessExitAgent, { step: 'done', evidence: '已经看过相关材料了' }), /没有生效中的 SOP 流程/)
 
   const raceCtx = makeCtx()
   const raceAgent = { id: 'agent-race' }
@@ -785,6 +829,7 @@ try {
   // Re-declare (queues a save) and end the flow in the same turn: the delete
   // must queue behind that save, not race it.
   doneCtx.declare(doneAgent, { step: 'inspect' })
+  doneCtx.emitResult(doneAgent, 'pwsh')
   assert.match(doneCtx.declare(doneAgent, { step: 'done', evidence: '不再需要这条分支了' }), /已结束流程/)
   for (let round = 0; round < 50; round += 1) {
     if (!existsSync(doneFile)) break
@@ -1019,6 +1064,24 @@ try {
     /没有标 approval/,
   )
   // A flow without the field stays freely advanceable (opt-in, not global).
+  const approvalExitCtx = makeCtx()
+  const approvalExitAgent = { id: 'agent-approval-exit' }
+  await approvalExitCtx.emitSkill(approvalExitAgent, 'approved-exit', approvalDir)
+  approvalExitCtx.declare(approvalExitAgent, { step: 'await-approval' })
+  assert.throws(
+    () => approvalExitCtx.declare(approvalExitAgent, { step: 'done', evidence: '用户说不用继续了' }),
+    /必须由用户运行 \/sop approve/,
+  )
+  const approvalExitSop = approvalExitCtx.registered.find((entry) => entry.name === 'sop')
+  assert.match(
+    approvalExitSop.handler({ agent: approvalExitAgent, rawInput: 'approve' }).text,
+    /已确认当前步骤/,
+  )
+  assert.match(
+    approvalExitCtx.declare(approvalExitAgent, { step: 'done', evidence: '用户说不用继续了' }),
+    /没有生效中的 SOP 流程/,
+  )
+
   const noApprovalDir = await makeSkill({
     version: 1,
     steps: [

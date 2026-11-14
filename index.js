@@ -62,7 +62,7 @@ function isDescriptorJoin(char, previous) {
 const RULES = [
   '## SOP Guard',
   '有些 skill 目录里附带 SOP.json 流程清单：每一步声明允许的工具，shell 步骤必须声明命令白名单，否则该步的 shell 会被拒绝。加载这种 skill 后，改文件、删除、跑命令的工具会按当前步骤的白名单校验。',
-  '开始每一步前调用 sop_step({"step":"<当前步骤 id>"}) 申报本步；申报对该步骤持续有效。申报下一步后，新的一步尚未申报，必须再调用一次 sop_step 申报它才能用工具。结束流程调用 sop_step({"step":"done","evidence":"..."})。结束与申报下一步都必须带 evidence（至少 8 个字符）；申报下一步时若本步声明了允许的工具，还需先有一次成功的工具执行记录。提前结束会记入主机日志。',
+  '开始每一步前调用 sop_step({"step":"<当前步骤 id>"}) 申报本步；申报对该步骤持续有效。申报下一步后，新的一步尚未申报，必须再调用一次 sop_step 申报它才能用工具。结束流程调用 sop_step({"step":"done","evidence":"..."})。结束和申报下一步都必须带 evidence（至少 8 个字符），本步声明了允许的工具时还要有一次成功的工具执行记录；结束流程额外要求本步已经申报。提前结束会记入主机日志。',
   '不给参数调用 sop_step 可查看当前流程、步骤与白名单；同时装载多个清单时用 sop_step({"skill":"<名称>"}) 切换生效的流程。被拒绝时的错误信息会写明原因、当前步骤、允许的工具/命令、下一步和清单位置。读取类工具不受限制。当前步骤也会出现在运行时上下文（Current runtime context）里；那份是权威的，拿不准自己在第几步时以它为准。',
   'run_code 的程序体同样受本步规则约束：程序体里出现 node:fs / node:child_process 等模块字面量时，若本步不允许改文件或有命令白名单，会被拒绝；要改文件、跑命令请用受管工具。标了 witness 的步骤不许改任何东西，但必须先用读取类工具看过依据（文件、日志、命令输出），再申报推进——只凭描述推进会被拒绝。标了 approval 的步骤要让用户运行 /sop approve 确认，你申报不了。清单写错或你不该再受它约束时，让用户运行 /sop off —— 只有用户能解除，你不要尝试绕过校验。',
 ].join('\n')
@@ -1136,11 +1136,11 @@ export function apply(ctx, config) {
   ctx.tools.register({
     name: 'sop_step',
     description:
-      '查看或申报当前 SOP 流程：不给参数返回当前流程、步骤与允许的工具/命令；给 step 申报当前步骤或它的下一步（申报下一步会自动推进，必须带 evidence；本步声明了工具时还需先有成功的工具执行；标了 approval 的步骤还要用户先运行 /sop approve；推进后新的一步需要单独申报）；step 为 "done" 结束流程；给 skill 切换生效的流程。申报对该步骤持续有效，不按工具调用次数消耗。',
+      '查看或申报当前 SOP 流程：不给参数返回当前流程、步骤与允许的工具/命令；给 step 申报当前步骤或它的下一步（申报下一步会自动推进，必须带 evidence；本步声明了工具时还需先有成功的工具执行；标了 approval 的步骤还要用户先运行 /sop approve；推进后新的一步需要单独申报）；step 为 "done" 结束流程，同样要先申报本步并满足推进门槛；给 skill 切换生效的流程。申报对该步骤持续有效，不按工具调用次数消耗。',
     parameters: {
       type: 'object',
       properties: {
-        step: { type: 'string', description: '当前或下一步的 id；填 "done" 结束流程；省略则只查询状态' },
+        step: { type: 'string', description: '当前或下一步的 id；填 "done" 结束流程（也要先申报本步、满足推进门槛）；省略则只查询状态' },
         skill: { type: 'string', description: '可选：切换到已装载的另一个流程' },
         action: { type: 'string', description: '可选：接下来要用的工具名，提前校验本步是否允许' },
         evidence: { type: 'string', description: '申报下一步时必填：上一步观察到的结果，至少 8 个字符' },
@@ -1173,6 +1173,16 @@ export function apply(ctx, config) {
           const flow = state.bySkill.get(state.active)
           const reason = requireEvidence(args, '提前结束流程')
           requireApproval(flow, '提前结束流程')
+          // Ending a flow drops the whole gate, so it must not be cheaper than
+          // advancing one step: the step has to be declared, and work-claiming
+          // steps need a run the host actually saw.
+          if (flow.declared !== true) {
+            const step = flow.sop.steps[flow.index]
+            throw new Error(
+              `本步「${step.id}」还没有申报：先调用 sop_step({"step":"${step.id}"}) 申报本步，再结束流程；本次拒绝没有副作用。`,
+            )
+          }
+          requireObservedWork(flow, '提前结束流程')
           const last = flow.index === flow.sop.steps.length - 1
           ctx.logger.warn(
             `sop-guard: flow "${flow.sop.skill}" ended at step ${flow.index + 1}/${flow.sop.steps.length}` +
