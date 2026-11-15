@@ -471,12 +471,10 @@ try {
   await reloadCtx.emitSkill(reloadAgent, 'demo', dir)
   assert.match(reloadCtx.declare(reloadAgent, {}), /第 2\/3 步/)
 
-  // Editing SOP.json while it is loaded must not carry a declaration or
-  // observed work onto a different step id. restoreFlow compares ids on
-  // restart; the in-session reload has to do the same. Reload deliberately
-  // happens while the flow sits on a declared step with work already done:
-  // keeping that state at the same numeric index would let the next gated
-  // call through undeclared.
+  // A step that can write SOP.json must not be able to replace the armed
+  // policy: reloading a changed file keeps the old checklist and only clears
+  // this step's volatile progress. Reload happens while the flow sits on a
+  // declared step with work already done, so a reset is observable.
   const editedDir = await makeSkill(SOP)
   dirs.push(editedDir)
   const editReloadCtx = makeCtx()
@@ -497,43 +495,35 @@ try {
     'utf8',
   )
   await editReloadCtx.emitSkill(editReloadAgent, 'demo', editedDir)
-  assert.match(editReloadCtx.declare(editReloadAgent, {}), /第 1\/3 步「收集材料」/)
+  assert.match(editReloadCtx.declare(editReloadAgent, {}), /第 1\/3 步「看现状」/)
   assert.match(editReloadCtx.stepContext(editReloadAgent), /本步尚未申报：先调用 sop_step/)
   assert.match(
     editReloadCtx.warnings.at(-1),
-    /the checklist for "demo" changed while it was loaded; restarted at step 1/,
+    /kept the armed checklist at step 1/,
   )
   assert.match(
     editReloadCtx.guard('pwsh', editReloadAgent, { command: 'git status' }),
     /本步还没有申报/,
   )
-  // The reloaded checklist is fully usable: its witness and approval steps
-  // still gate advancing, so a reset does not simply skip the new rules.
-  editReloadCtx.declare(editReloadAgent, { step: 'gather' })
+  assert.throws(
+    () => editReloadCtx.declare(editReloadAgent, { step: 'gather' }),
+    /不在可申报范围内/,
+  )
+  // The old checklist stays usable: the declaration and the work were cleared,
+  // so the model has to declare and run a command again before advancing.
+  assert.throws(
+    () => editReloadCtx.declare(editReloadAgent, { step: 'propose', evidence: '这次已经完整看完了现状' }),
+    /还没有申报/,
+  )
+  editReloadCtx.declare(editReloadAgent, { step: 'inspect' })
+  assert.throws(
+    () => editReloadCtx.declare(editReloadAgent, { step: 'propose', evidence: '这次已经完整看完了现状' }),
+    /成功的工具执行记录/,
+  )
   editReloadCtx.emitResult(editReloadAgent, 'pwsh')
   assert.match(
-    editReloadCtx.declare(editReloadAgent, { step: 'review', evidence: '已经收齐材料可以核对' }),
+    editReloadCtx.declare(editReloadAgent, { step: 'propose', evidence: '这次已经完整看完了现状' }),
     /第 2\/3 步/,
-  )
-  editReloadCtx.declare(editReloadAgent, { step: 'review' })
-  // requireApproval runs before requireObservedWork, so approval fires first.
-  assert.throws(
-    () => editReloadCtx.declare(editReloadAgent, { step: 'commit', evidence: '方案已经仔细看过了' }),
-    /必须由用户运行 \/sop approve/,
-  )
-  const editReloadCommand = editReloadCtx.registered.find((entry) => entry.name === 'sop')
-  assert.match(
-    editReloadCommand.handler({ agent: editReloadAgent, rawInput: 'approve' }).text,
-    /已确认当前步骤/,
-  )
-  assert.throws(
-    () => editReloadCtx.declare(editReloadAgent, { step: 'commit', evidence: '人也点头了，可以提交' }),
-    /要求先真实读取依据/,
-  )
-  editReloadCtx.emitResult(editReloadAgent, 'read')
-  assert.match(
-    editReloadCtx.declare(editReloadAgent, { step: 'commit', evidence: '读过了，人也点头了' }),
-    /第 3\/3 步/,
   )
 
   // A resumed session reuses the agent id with a new instance and can arm again.
@@ -1230,7 +1220,9 @@ try {
     'utf8',
   )
   await b32ShapeCtx.emitSkill(b32ShapeAgent, 'shaped', b32ShapeDir)
-  assert.match(b32ShapeCtx.warnings.join('\n'), /the checklist for "shaped" changed while it was loaded; restarted at step 1/)
+  assert.match(b32ShapeCtx.warnings.join('\n'), /the checklist for "shaped" changed while it was loaded; kept the armed checklist at step 1/)
+  // The reloaded file is pinned out: the original pwsh/approval step still
+  // governs, while declaration, approval, and observed work are all cleared.
   assert.match(b32ShapeCtx.stepContext(b32ShapeAgent), /本步尚未申报/)
   assert.match(b32ShapeCtx.guard('pwsh', b32ShapeAgent), /本步还没有申报/)
   assert.throws(
@@ -1241,7 +1233,12 @@ try {
   assert.match(b32ShapeSop.handler({ agent: b32ShapeAgent, rawInput: 'approve' }).text, /已确认当前步骤/)
   assert.throws(
     () => b32ShapeCtx.declare(b32ShapeAgent, { step: 'done', evidence: '沿用旧步骤的执行记录即可结束' }),
-    /要求先真实读取依据/,
+    /成功的工具执行记录/,
+  )
+  b32ShapeCtx.emitResult(b32ShapeAgent, 'pwsh')
+  assert.match(
+    b32ShapeCtx.declare(b32ShapeAgent, { step: 'done', evidence: '这次确实跑了原来的命令' }),
+    /已结束流程/,
   )
 
   // F2: the run_code container is not work; only its nested calls are.
@@ -1387,6 +1384,126 @@ try {
     /分两次 sop_step 调用/,
   )
   assert.match(b32SwitchCtx.declare(b32SwitchAgent, { skill: 'demo' }), /demo\(生效中\)/)
+
+  // B33-1: a non-shell background run must not be mistaken for finished work,
+  // and a workflow's settled verdict uses an "N agents" detail rather than an
+  // exit code.
+  const b33WorkflowCtx = makeCtx()
+  const b33WorkflowAgent = { id: 'agent-b33-workflow' }
+  const b33WorkflowDir = await makeSkill({
+    version: 1,
+    steps: [
+      { id: 'run', title: '跑工作流', tools: ['workflow'], commands: undefined },
+      { id: 'report', title: '汇报', tools: [] },
+    ],
+  })
+  dirs.push(b33WorkflowDir)
+  await b33WorkflowCtx.emitSkill(b33WorkflowAgent, 'b33workflow', b33WorkflowDir)
+  b33WorkflowCtx.declare(b33WorkflowAgent, { step: 'run' })
+  b33WorkflowCtx.emitResult(b33WorkflowAgent, 'workflow', false, { kind: 'background', jobId: 'wf-job-1', runId: 'run-1' })
+  assert.throws(
+    () => b33WorkflowCtx.declare(b33WorkflowAgent, { step: 'report', evidence: '工作流已经丢到后台跑起来了' }),
+    /成功的工具执行记录/,
+  )
+  b33WorkflowCtx.emitResult(b33WorkflowAgent, 'job_output', false, {
+    text: 'done',
+    job: { id: 'wf-job-1', kind: 'workflow', status: 'completed', detail: '2 agents' },
+  })
+  assert.match(
+    b33WorkflowCtx.declare(b33WorkflowAgent, { step: 'report', evidence: '工作流已经完整跑完' }),
+    /第 2\/2 步/,
+  )
+
+  // B33-2: a child cannot settle a job the parent started, even when both
+  // agents are on the same step and use the same job id.
+  const b33JobCtx = makeCtx()
+  const b33JobParent = { id: 'b33-job-parent' }
+  const b33JobChild = { id: 'b33-job-child' }
+  b33JobCtx.agentState.list = [b33JobParent, b33JobChild]
+  b33JobCtx.agentState.owners.set('b33-job-child', b33JobParent)
+  await b33JobCtx.emitSkill(b33JobParent, 'demo', dir)
+  await b33JobCtx.created(b33JobChild)
+  b33JobCtx.declare(b33JobParent, { step: 'inspect' })
+  b33JobCtx.declare(b33JobChild, { step: 'inspect' })
+  b33JobCtx.emitResult(b33JobParent, 'pwsh', false, { kind: 'background', jobId: 'b33-parent-job' })
+  b33JobCtx.emitResult(b33JobChild, 'job_output', false, {
+    text: 'done',
+    job: { id: 'b33-parent-job', kind: 'pwsh', status: 'completed', detail: 'exit code: 0' },
+  })
+  assert.throws(
+    () => b33JobCtx.declare(b33JobChild, { step: 'propose', evidence: '借父任务的完成记录来推进' }),
+    /成功的工具执行记录/,
+  )
+  b33JobCtx.emitResult(b33JobParent, 'job_output', false, {
+    text: 'done',
+    job: { id: 'b33-parent-job', kind: 'pwsh', status: 'completed', detail: 'exit code: 0' },
+  })
+  assert.match(
+    b33JobCtx.declare(b33JobParent, { step: 'propose', evidence: '父任务自己收了输出' }),
+    /第 2\/3 步/,
+  )
+
+  // B33-3: an old snapshot without gatedTools/fingerprint is quarantined, and
+  // a broken SOP.json cannot make a custom tool ungated.
+  const b33LegacyDir = await makeSkill()
+  dirs.push(b33LegacyDir)
+  const b33LegacyStateDir = await mkdtemp(join(tmpdir(), 'sop-guard-b33-legacy-'))
+  dirs.push(b33LegacyStateDir)
+  await writeFile(
+    join(b33LegacyStateDir, 'b33-legacy.json'),
+    JSON.stringify({
+      skill: 'legacy',
+      bySkill: {
+        legacy: {
+          dir: b33LegacyDir,
+          index: 0,
+          declared: false,
+          doneWork: 0,
+          observed: [],
+          steps: [{ id: 'inspect', title: '看现状', tools: ['pwsh'], commands: ['^git status$'] }],
+        },
+      },
+    }),
+    'utf8',
+  )
+  const b33LegacyCtx = makeCtx({ stateDir: b33LegacyStateDir })
+  const b33LegacyAgent = { id: 'b33-legacy' }
+  await b33LegacyCtx.created(b33LegacyAgent)
+  assert.match(b33LegacyCtx.warnings.join('\n'), /persisted checklist for "legacy" is untrusted/)
+  assert.match(b33LegacyCtx.guard('custom_tool', b33LegacyAgent), /本步还没有申报/)
+  assert.match(b33LegacyCtx.declare(b33LegacyAgent, {}), /持久化状态不可信/)
+  b33LegacyCtx.declare(b33LegacyAgent, { step: 'inspect' })
+  assert.match(b33LegacyCtx.guard('custom_tool', b33LegacyAgent), /本步不允许调用 custom_tool/)
+  assert.throws(
+    () => b33LegacyCtx.declare(b33LegacyAgent, { step: 'done', evidence: '旧快照想直接结束掉' }),
+    /持久化策略不可信/,
+  )
+
+  // B33-4: reloading a changed SOP.json pins the already armed policy.
+  const b33PinCtx = makeCtx()
+  const b33PinAgent = { id: 'agent-b33-pin' }
+  const b33PinDir = await makeSkill({
+    version: 1,
+    steps: [{ id: 'strict', title: '严格一步', tools: [] }, { id: 'last', title: '最后一步', tools: [] }],
+  })
+  dirs.push(b33PinDir)
+  await b33PinCtx.emitSkill(b33PinAgent, 'pinned', b33PinDir)
+  b33PinCtx.declare(b33PinAgent, { step: 'strict' })
+  b33PinCtx.emitResult(b33PinAgent, 'read')
+  await writeFile(
+    join(b33PinDir, 'SOP.json'),
+    JSON.stringify({ version: 1, steps: [{ id: 'loose', title: '放开', tools: ['write'] }] }),
+    'utf8',
+  )
+  await b33PinCtx.emitSkill(b33PinAgent, 'pinned', b33PinDir)
+  assert.match(b33PinCtx.declare(b33PinAgent, {}), /第 1\/2 步「严格一步」/)
+  assert.match(b33PinCtx.warnings.at(-1), /kept the armed checklist at step 1/)
+  b33PinCtx.declare(b33PinAgent, { step: 'strict' })
+  assert.match(b33PinCtx.guard('write', b33PinAgent), /本步不允许调用 write/)
+  assert.throws(
+    () => b33PinCtx.declare(b33PinAgent, { step: 'loose' }),
+    /不在可申报范围内/,
+  )
 
   console.log('sop-guard: all checks passed')
 } finally {

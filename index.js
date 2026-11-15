@@ -69,7 +69,28 @@ const RULES = [
 
 
 function isGateTool(toolName, sop) {
+  if (sop.untrustedGates === true) return !READ_TOOLS.includes(toolName)
   return GATED_TOOLS.includes(toolName) || sop.gatedTools.includes(toolName)
+}
+
+/** A snapshot without trusted policy fields cannot say which tools the gate
+ * covers. Quarantine it: gate everything except reads and never let a model
+ * advance or end the flow. Only a human /sop off can drop it. */
+function quarantineSop(sop) {
+  return {
+    skill: sop.skill,
+    steps: sop.steps.map((step) => ({ ...step, tools: [] })),
+    gatedTools: [],
+    untrustedGates: true,
+  }
+}
+
+function requireTrustedPolicy(flow, kind) {
+  if (flow.sop.untrustedGates !== true) return
+  throw new Error(
+    `流程「${flow.sop.skill}」的持久化策略不可信：缺少完整的 gatedTools / fingerprint 或字段不一致；` +
+      `只能由用户运行 /sop off 解除，模型不能${kind}。本次拒绝没有副作用。`,
+  )
 }
 
 /** Validate a parsed SOP document; unknown shapes are reported, never guessed. */
@@ -183,6 +204,7 @@ function flowToJson(flow) {
     evidence: flow.evidence,
     observed: flow.observed ?? [],
     gatedTools: flow.sop.gatedTools ?? [],
+    untrustedGates: flow.sop.untrustedGates === true,
     fingerprint: checklistFingerprint(flow.sop),
     steps: flow.sop.steps.map((step) => ({
       id: step.id,
@@ -196,32 +218,54 @@ function flowToJson(flow) {
 }
 
 function flowFromJson(json) {
-  const steps = []
-  for (const step of json.steps ?? []) {
-    let commands
-    if (step.commands !== undefined) {
-      commands = []
-      for (const source of step.commands) {
-        try {
-          commands.push({ source, regex: new RegExp(source) })
-        } catch {
-          return undefined
-        }
-      }
+  const rawSteps = Array.isArray(json.steps) ? json.steps : []
+  // Rebuild the checklist through the same parser that reads SOP.json. A file
+  // on disk can be forged with loose steps and a matching fingerprint, so the
+  // shape itself has to be validated before any of it is trusted.
+  const parsed = parseSop(
+    {
+      version: 1,
+      steps: rawSteps,
+      gatedTools: Array.isArray(json.gatedTools) ? json.gatedTools : undefined,
+    },
+    json.skill,
+  )
+  const trusted = parsed.error === undefined
+    && Array.isArray(json.gatedTools)
+    && json.fingerprint !== undefined
+    && json.untrustedGates !== true
+    && json.fingerprint === checklistFingerprint(parsed.sop)
+  if (trusted) {
+    return {
+      dir: json.dir,
+      sop: parsed.sop,
+      index: json.index ?? 0,
+      declared: json.declared === true,
+      doneWork: json.doneWork ?? 0,
+      evidence: json.evidence,
+      observed: json.observed ?? [],
+      fingerprint: json.fingerprint,
+      pendingJobs: [],
     }
-    steps.push({ id: step.id, title: step.title, tools: step.tools, commands, witness: step.witness === true, approval: step.approval === true })
   }
-  if (steps.length === 0) return undefined
-  const sop = { skill: json.skill, steps, gatedTools: json.gatedTools ?? [] }
+  // A legacy, malformed, or internally inconsistent snapshot cannot say which
+  // tools the gate covers. Keep a quarantined flow instead of dropping it: only
+  // a human /sop off can disarm it, and every non-read tool stays gated.
+  const steps = rawSteps.length > 0
+    ? rawSteps.map((step) => ({
+      id: typeof step?.id === 'string' ? step.id : 'quarantine',
+      title: typeof step?.title === 'string' ? step.title : 'Untrusted policy',
+    }))
+    : [{ id: 'quarantine', title: 'Untrusted policy' }]
   return {
     dir: json.dir,
-    sop,
-    index: json.index ?? 0,
-    declared: json.declared === true,
-    doneWork: json.doneWork ?? 0,
-    evidence: json.evidence,
-    observed: json.observed ?? [],
-    fingerprint: json.fingerprint ?? checklistFingerprint(sop),
+    sop: quarantineSop({ skill: json.skill, steps, gatedTools: [] }),
+    index: 0,
+    declared: false,
+    doneWork: 0,
+    evidence: undefined,
+    observed: [],
+    fingerprint: '',
     pendingJobs: [],
   }
 }
@@ -333,6 +377,22 @@ async function restoreFlow(ctx, stateDir, key) {
   const state = await loadFlows(stateDir, key)
   if (state === undefined) return undefined
   for (const [name, flow] of state.bySkill) {
+    // A quarantined snapshot has no policy worth restoring. Reading a file that
+    // happens to sit at its old dir would let the forged copy replace the
+    // fail-closed gate, so keep the quarantine until a human runs /sop off.
+    if (flow.sop.untrustedGates === true) {
+      flow.index = 0
+      flow.declared = false
+      flow.doneWork = 0
+      flow.observed = []
+      flow.approved = false
+      flow.evidence = undefined
+      flow.pendingJobs = []
+      ctx.logger?.warn?.(
+        `sop-guard: the persisted checklist for "${name}" is untrusted; kept the fail-closed gate until /sop off`,
+      )
+      continue
+    }
     // The step the session had reached, by id: an index alone cannot be
     // trusted once the checklist on disk may have changed.
     const loaded = await loadSop(flow.dir, name)
@@ -402,12 +462,11 @@ function isFailedResult(exec, result) {
   return false
 }
 
-/** Whether a shell call is still running instead of finished. A background run
+/** Whether a call is still running instead of finished. A background run
  * returns a job id and a promoted run says the command was moved to the
- * background: neither carries an exit code, so the work is not observable yet
+ * background: neither carries a verdict, so the work is not observable yet
  * and must not count as a finished step. */
-function isUnsettledResult(exec, result) {
-  if (!SHELL_TOOLS.includes(exec.name)) return false
+function isUnsettledResult(result) {
   const kind = result?.value?.kind
   return kind === 'background' || kind === 'promoted'
 }
@@ -423,7 +482,7 @@ function jobOutcome(job) {
   if (status !== 'completed') return undefined
   const detail = typeof job.detail === 'string' ? job.detail : ''
   const match = /exit code: (-?\d+)/.exec(detail)
-  if (match === null) return 'failed'
+  if (match === null) return /^\d+ agents?$/.test(detail) ? 'ok' : 'failed'
   return match[1] === '0' ? 'ok' : 'failed'
 }
 
@@ -955,6 +1014,7 @@ function renderStatus(state, pending = []) {
   if (step.commands !== undefined) lines.push(listPatterns(step))
   else if (hasUncheckedShell(step)) lines.push('本步允许 shell 但未声明 commands，该步的 shell 调用会被拒绝。')
   if (flow.evidence !== undefined) lines.push(`上一步申报依据：${flow.evidence}`)
+  if (flow.sop.untrustedGates === true) lines.push('这条流程的持久化状态不可信，已停在第 1 步；请让用户运行 /sop off 解除。')
   if (next !== undefined) lines.push(`下一步「${next.title}」（id: ${next.id}）。`)
   else lines.push('已是最后一步；完成后调用 sop_step({"step":"done","evidence":"..."}) 结束流程。')
   for (const notice of pending) lines.push(notice)
@@ -985,6 +1045,7 @@ function renderStepContext(state) {
   }
   if (step.commands !== undefined) parts.push(`本步命令白名单：${step.commands.map((entry) => entry.source).join(' | ')}`)
   else if (hasUncheckedShell(step)) parts.push('本步允许 shell 但未声明 commands，该步的 shell 调用会被拒绝')
+  if (flow.sop.untrustedGates === true) parts.push('持久化状态不可信：让用户运行 /sop off 解除')
   if (next !== undefined) parts.push(`下一步「${next.title}」（id: ${next.id}）`)
   else parts.push('已是最后一步；完成后调用 sop_step({"step":"done","evidence":"..."}) 结束流程')
   return `${parts.join('；')}。`
@@ -1044,6 +1105,7 @@ function findInherited(ctx, key, sessions) {
           observed: [],
           approved: false,
           evidence: undefined,
+          pendingJobs: [],
         })
       }
       return { parentKey, state: { active: parentState.active, bySkill } }
@@ -1235,6 +1297,7 @@ export function apply(ctx, config) {
       if (args.step === DONE) {
         if (state.active !== null) {
           const flow = state.bySkill.get(state.active)
+          requireTrustedPolicy(flow, '结束流程')
           const reason = requireEvidence(args, '提前结束流程')
           requireApproval(flow, '提前结束流程')
           // Ending a flow drops the whole gate, so it must not be cheaper than
@@ -1280,6 +1343,7 @@ export function apply(ctx, config) {
         )
       }
       if (target === next?.id) {
+        requireTrustedPolicy(flow, '申报下一步')
         requireDeclared(flow, '申报下一步')
         const evidence = requireEvidence(args, '申报下一步')
         requireApproval(flow, '申报下一步')
@@ -1347,7 +1411,7 @@ export function apply(ctx, config) {
       // background or promoted run has no exit code at all: the command is
       // still going, so it is not observed work either.
       const failed = isFailedResult(exec, result)
-      const unsettled = isUnsettledResult(exec, result)
+      const unsettled = isUnsettledResult(result)
       // A background run settles later via `job_output`. Remember which job
       // this step launched, so a verdict from another step cannot be spent as
       // this step's work. The stored tool name is used, not the job projection.
@@ -1355,14 +1419,14 @@ export function apply(ctx, config) {
         const jobId = result.value?.jobId
         if (typeof jobId === 'string' && jobId !== '') {
           if (active.pendingJobs === undefined) active.pendingJobs = []
-          active.pendingJobs.push({ jobId, toolName: exec.name, index: active.index })
+          active.pendingJobs.push({ jobId, toolName: exec.name, index: active.index, owner: resultKey })
         }
       }
       const job = exec.name === 'job_output' ? result.value?.job : undefined
       const verdict = job === undefined ? undefined : jobOutcome(job)
       const pending = active?.pendingJobs ?? []
       const claimed = verdict === 'ok' && job !== undefined
-        ? pending.find((entry) => entry.jobId === job.id && entry.index === active.index)
+        ? pending.find((entry) => entry.jobId === job.id && entry.index === active.index && entry.owner === resultKey)
         : undefined
       const observedName = claimed?.toolName ?? exec.name
       if (!failed && !unsettled && active !== undefined && active.declared && isCommittable(active.sop.steps[active.index], observedName)) {
@@ -1468,8 +1532,11 @@ export function apply(ctx, config) {
       if (same) {
         flow = { ...previous, dir: base.path, sop: loaded.sop, index, fingerprint }
       } else {
-        ctx.logger.warn(`sop-guard: the checklist for "${skillName}" changed while it was loaded; restarted at step 1`)
-        flow = { dir: base.path, sop: loaded.sop, index: 0, declared: false, doneWork: 0, observed: [], approved: false, evidence: undefined, fingerprint, pendingJobs: [] }
+        // A tool that can write SOP.json could otherwise replace the armed
+        // policy with a looser one and reload the skill. Keep the already armed
+        // checklist: a changed file only resets the volatile step progress.
+        ctx.logger.warn(`sop-guard: the checklist for "${skillName}" changed while it was loaded; kept the armed checklist at step 1`)
+        flow = { ...previous, dir: base.path, sop: previous.sop, index: 0, declared: false, doneWork: 0, observed: [], approved: false, evidence: undefined, fingerprint: previous.fingerprint, pendingJobs: [] }
       }
     }
     state.bySkill.set(skillName, flow)
