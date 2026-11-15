@@ -362,6 +362,11 @@ try {
   workCtx.emitResult(workAgent, 'pwsh')
   assert.match(workCtx.declare(workAgent, {}), /本步已观察到 1 次成功的工具执行/)
   assert.match(workCtx.declare(workAgent, { step: 'propose', evidence: '分支风格为两段式 type/name' }), /第 2\/3 步/)
+  assert.throws(
+    () => workCtx.declare(workAgent, { step: 'create', evidence: '用户已确认分支名 feat/x' }),
+    /还没有申报/,
+  )
+  workCtx.declare(workAgent, { step: 'propose' })
   assert.match(workCtx.declare(workAgent, { step: 'create', evidence: '用户已确认分支名 feat/x' }), /第 3\/3 步/)
 
   // `done` drops the whole gate, so it is no cheaper than advancing: the
@@ -1195,6 +1200,193 @@ try {
   const exampleAgent = { id: 'agent-example' }
   assert.deepEqual(await exampleCtx.emitSkill(exampleAgent, 'sop-demo', exampleDir), [])
   assert.match(exampleCtx.declare(exampleAgent, {}), /已装载流程：sop-demo/)
+
+  // Batch 32 regressions: seven gate bypasses found by adversarial review.
+  // F1: a step that keeps its id but changes its shape is a different step.
+  const b32ShapeDir = await makeSkill({
+    version: 1,
+    steps: [
+      { id: 'inspect', title: '看现状', tools: ['pwsh'], commands: ['^git status$'], approval: true },
+      { id: 'next', title: '下一步', tools: [] },
+    ],
+  })
+  dirs.push(b32ShapeDir)
+  const b32ShapeCtx = makeCtx()
+  const b32ShapeAgent = { id: 'agent-b32-shape' }
+  await b32ShapeCtx.emitSkill(b32ShapeAgent, 'shaped', b32ShapeDir)
+  b32ShapeCtx.declare(b32ShapeAgent, { step: 'inspect' })
+  const b32ShapeSop = b32ShapeCtx.registered.find((entry) => entry.name === 'sop')
+  assert.match(b32ShapeSop.handler({ agent: b32ShapeAgent, rawInput: 'approve' }).text, /已确认当前步骤/)
+  b32ShapeCtx.emitResult(b32ShapeAgent, 'pwsh')
+  await writeFile(
+    join(b32ShapeDir, 'SOP.json'),
+    JSON.stringify({
+      version: 1,
+      steps: [
+        { id: 'inspect', title: '看现状', tools: [], witness: true, approval: true },
+        { id: 'next', title: '下一步', tools: [] },
+      ],
+    }),
+    'utf8',
+  )
+  await b32ShapeCtx.emitSkill(b32ShapeAgent, 'shaped', b32ShapeDir)
+  assert.match(b32ShapeCtx.warnings.join('\n'), /the checklist for "shaped" changed while it was loaded; restarted at step 1/)
+  assert.match(b32ShapeCtx.stepContext(b32ShapeAgent), /本步尚未申报/)
+  assert.match(b32ShapeCtx.guard('pwsh', b32ShapeAgent), /本步还没有申报/)
+  assert.throws(
+    () => b32ShapeCtx.declare(b32ShapeAgent, { step: 'done', evidence: '沿用旧步骤的批准和执行记录即可结束' }),
+    /必须由用户运行 \/sop approve/,
+  )
+  b32ShapeCtx.declare(b32ShapeAgent, { step: 'inspect' })
+  assert.match(b32ShapeSop.handler({ agent: b32ShapeAgent, rawInput: 'approve' }).text, /已确认当前步骤/)
+  assert.throws(
+    () => b32ShapeCtx.declare(b32ShapeAgent, { step: 'done', evidence: '沿用旧步骤的执行记录即可结束' }),
+    /要求先真实读取依据/,
+  )
+
+  // F2: the run_code container is not work; only its nested calls are.
+  const b32CarrierCtx = makeCtx()
+  const b32CarrierAgent = { id: 'agent-b32-carrier' }
+  await b32CarrierCtx.emitSkill(b32CarrierAgent, 'demo', dir)
+  b32CarrierCtx.declare(b32CarrierAgent, { step: 'inspect' })
+  assert.equal(b32CarrierCtx.guard('run_code', b32CarrierAgent, { code: 'const a = 1' }), undefined)
+  b32CarrierCtx.emitResult(b32CarrierAgent, 'run_code', false, { code: 'const a = 1' })
+  assert.throws(
+    () => b32CarrierCtx.declare(b32CarrierAgent, { step: 'propose', evidence: '空程序体不算真正干活' }),
+    /成功的工具执行记录/,
+  )
+  b32CarrierCtx.emitResult(b32CarrierAgent, 'pwsh')
+  assert.match(b32CarrierCtx.declare(b32CarrierAgent, { step: 'propose', evidence: '这次确实真跑了命令' }), /第 2\/3 步/)
+
+  // F3: a job_output verdict only counts for the step that started that job.
+  const b32JobDir = await makeSkill({
+    version: 1,
+    steps: [
+      { id: 'prep', title: '准备', tools: ['pwsh'], commands: ['^git status$'] },
+      { id: 'build', title: '构建', tools: ['pwsh'], commands: ['^git status$'] },
+      { id: 'finish', title: '收尾', tools: [] },
+    ],
+  })
+  dirs.push(b32JobDir)
+  const b32JobCtx = makeCtx()
+  const b32JobAgent = { id: 'agent-b32-job' }
+  await b32JobCtx.emitSkill(b32JobAgent, 'jobflow', b32JobDir)
+  b32JobCtx.declare(b32JobAgent, { step: 'prep' })
+  b32JobCtx.emitResult(b32JobAgent, 'pwsh', false, { kind: 'background', jobId: 'b32-prep-job' })
+  b32JobCtx.emitResult(b32JobAgent, 'pwsh', false, { kind: 'foreground', exitCode: 0 })
+  b32JobCtx.declare(b32JobAgent, { step: 'build', evidence: '准备工作已经跑完了' })
+  b32JobCtx.declare(b32JobAgent, { step: 'build' })
+  b32JobCtx.emitResult(b32JobAgent, 'job_output', false, {
+    text: 'done',
+    job: { id: 'b32-prep-job', kind: 'pwsh', status: 'completed', detail: 'exit code: 0' },
+  })
+  assert.throws(
+    () => b32JobCtx.declare(b32JobAgent, { step: 'finish', evidence: '拿别步的作业结果凑数' }),
+    /成功的工具执行记录/,
+  )
+  b32JobCtx.emitResult(b32JobAgent, 'pwsh', false, { kind: 'background', jobId: 'b32-build-job' })
+  b32JobCtx.emitResult(b32JobAgent, 'job_output', false, {
+    text: 'done',
+    job: { id: 'b32-build-job', kind: 'pwsh', status: 'completed', detail: 'exit code: 0' },
+  })
+  assert.match(b32JobCtx.declare(b32JobAgent, { step: 'finish', evidence: '本步自己的作业已经跑完' }), /第 3\/3 步/)
+
+  // F4: a cached inherited copy must not beat the session's own restored flow.
+  const b32PermissiveDir = await makeSkill({ version: 1, steps: [{ id: 'free', title: '随意', tools: ['write'] }] })
+  const b32StrictDir = await makeSkill({ version: 1, steps: [{ id: 'tight', title: '严格', tools: [] }] })
+  dirs.push(b32PermissiveDir, b32StrictDir)
+  const b32InheritDir = await mkdtemp(join(tmpdir(), 'sop-guard-b32-state-'))
+  dirs.push(b32InheritDir)
+  const b32InheritFirst = makeCtx({ stateDir: b32InheritDir })
+  const b32ParentFirst = { id: 'b32-parent' }
+  const b32ChildFirst = { id: 'b32-child' }
+  await b32InheritFirst.emitSkill(b32ParentFirst, 'permissive', b32PermissiveDir)
+  await b32InheritFirst.emitSkill(b32ChildFirst, 'strict', b32StrictDir)
+  b32InheritFirst.declare(b32ChildFirst, { step: 'tight' })
+  for (let round = 0; round < 50; round += 1) {
+    const parent = join(b32InheritDir, 'b32-parent.json')
+    const child = join(b32InheritDir, 'b32-child.json')
+    if (existsSync(parent) && existsSync(child)) {
+      const childFlow = JSON.parse(readFileSync(child, 'utf8'))
+      if (childFlow?.bySkill?.strict !== undefined && childFlow?.skill === 'strict') break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  const b32InheritSecond = makeCtx({ stateDir: b32InheritDir })
+  const b32ParentSecond = { id: 'b32-parent' }
+  const b32ChildSecond = { id: 'b32-child' }
+  b32InheritSecond.agentState.list = [b32ParentSecond, b32ChildSecond]
+  b32InheritSecond.agentState.owners.set('b32-child', b32ParentSecond)
+  await b32InheritSecond.created(b32ParentSecond)
+  assert.match(b32InheritSecond.guard('write', b32ChildSecond), /本步还没有申报/)
+  await b32InheritSecond.created(b32ChildSecond)
+  assert.match(b32InheritSecond.declare(b32ChildSecond, {}), /strict\(生效中\)/)
+  b32InheritSecond.declare(b32ChildSecond, { step: 'tight' })
+  assert.match(b32InheritSecond.guard('write', b32ChildSecond), /本步不允许调用 write/)
+
+  // F4b: a disposed agent is not revived by a late result.
+  const b32LateCtx = makeCtx()
+  const b32LateParent = { id: 'b32-late-parent' }
+  const b32LateChild = { id: 'b32-late-child' }
+  b32LateCtx.agentState.list = [b32LateParent, b32LateChild]
+  b32LateCtx.agentState.owners.set('b32-late-child', b32LateParent)
+  await b32LateCtx.emitSkill(b32LateParent, 'permissive', b32PermissiveDir)
+  b32LateCtx.dispose(b32LateChild)
+  b32LateCtx.emitResult(b32LateChild, 'read', false, { content: [{ type: 'text', text: 'late' }] })
+  assert.throws(() => b32LateCtx.declare(b32LateChild, {}), /没有已装载的 SOP/)
+
+  // F5: an unreadable checklist after a restart keeps the gate, not drops it.
+  const b32BrokenDir = await makeSkill({
+    version: 1,
+    gatedTools: ['custom_tool'],
+    steps: [{ id: 'inspect', title: '看现状', tools: ['pwsh'], commands: ['^git status$'] }],
+  })
+  dirs.push(b32BrokenDir)
+  const b32ResumeDir = await mkdtemp(join(tmpdir(), 'sop-guard-b32-resume-'))
+  dirs.push(b32ResumeDir)
+  const b32ResumeFirst = makeCtx({ stateDir: b32ResumeDir })
+  const b32ResumeAgent = { id: 'b32-resume' }
+  await b32ResumeFirst.emitSkill(b32ResumeAgent, 'demo', b32BrokenDir)
+  const b32ResumeFile = join(b32ResumeDir, 'b32-resume.json')
+  for (let round = 0; round < 50; round += 1) {
+    if (existsSync(b32ResumeFile)) break
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  await writeFile(join(b32BrokenDir, 'SOP.json'), '{ broken', 'utf8')
+  const b32ResumeSecond = makeCtx({ stateDir: b32ResumeDir })
+  await b32ResumeSecond.created({ id: 'b32-resume' })
+  assert.match(b32ResumeSecond.warnings.join('\n'), /could not be read while the session was away; kept the flow at step 1/)
+  assert.match(b32ResumeSecond.guard('custom_tool', { id: 'b32-resume' }), /本步还没有申报/)
+  assert.match(b32ResumeSecond.declare({ id: 'b32-resume' }, {}), /已装载流程：demo/)
+
+  // F6: an undeclared reasoning-only step cannot advance either.
+  const b32ReasonDir = await makeSkill({
+    version: 1,
+    steps: [{ id: 'think', title: '想一想', tools: [] }, { id: 'next', title: '下一步', tools: [] }],
+  })
+  dirs.push(b32ReasonDir)
+  const b32ReasonCtx = makeCtx()
+  const b32ReasonAgent = { id: 'agent-b32-reason' }
+  await b32ReasonCtx.emitSkill(b32ReasonAgent, 'reasoned', b32ReasonDir)
+  assert.throws(
+    () => b32ReasonCtx.declare(b32ReasonAgent, { step: 'next', evidence: '从未申报当前步也能推进' }),
+    /还没有申报/,
+  )
+  b32ReasonCtx.declare(b32ReasonAgent, { step: 'think' })
+  assert.match(b32ReasonCtx.declare(b32ReasonAgent, { step: 'next', evidence: '这次先申报了本步' }), /第 2\/2 步/)
+
+  // F7: switching the active flow and declaring a step are separate calls.
+  const b32SwitchCtx = makeCtx()
+  const b32SwitchAgent = { id: 'agent-b32-switch' }
+  const b32OtherDir = await makeSkill({ version: 1, steps: [{ id: 'only', title: '唯一一步', tools: [] }] })
+  dirs.push(b32OtherDir)
+  await b32SwitchCtx.emitSkill(b32SwitchAgent, 'demo', dir)
+  await b32SwitchCtx.emitSkill(b32SwitchAgent, 'other', b32OtherDir)
+  assert.throws(
+    () => b32SwitchCtx.declare(b32SwitchAgent, { skill: 'demo', step: 'done', evidence: '切回来直接结束掉' }),
+    /分两次 sop_step 调用/,
+  )
+  assert.match(b32SwitchCtx.declare(b32SwitchAgent, { skill: 'demo' }), /demo\(生效中\)/)
 
   console.log('sop-guard: all checks passed')
 } finally {

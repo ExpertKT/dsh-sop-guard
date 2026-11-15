@@ -94,7 +94,7 @@ The plugin registers one tool, `sop_step`:
 
 - `sop_step({ step: "inspect" })` declares the current step. The declaration covers the whole step; it is not consumed per call.
 - `sop_step({ step: "review", evidence: "..." })` advances. Evidence is at least 8 characters and describes what the previous step found. If that step declared tools, the harness also requires one observed successful call, so a rejected shell command with a non-zero exit code does not count.
-- `sop_step({ skill: "name" })` switches which armed flow is active.
+- `sop_step({ skill: "name" })` switches which armed flow is active, on its own; do not combine it with `step` in one call.
 - `sop_step({})` returns the current state.
 - `sop_step({ step: "done", evidence: "..." })` ends the flow early. Ending drops the whole gate, so it has the same bar as advancing: declare the current step, show one successful call in tool-declaring steps, a real read in `witness` steps, and human confirmation in `approval` steps. The host logs who ended it, at which step, and why.
 
@@ -116,7 +116,8 @@ Every gated call is checked against the declared step:
 - A shell that carries its own command (`pwsh -Command "..."`, `bash -c "..."`) is checked on the inner command, not on the word `pwsh`. A shell told to read its command from a file or standard input is rejected, because there is nothing to check. Two levels of shell nesting are rejected for the same reason.
 - Encoded-command flags (`-EncodedCommand`, `-enc`) are rejected.
 - A step that does not allow file-writing tools cannot reach the same effect through `Set-Content`, `Out-File`, `Remove-Item`, `cp`, `mv`, `mkdir`, `tee`, `dd` and similar.
-- `run_code` program bodies are scanned for module literals. `node:fs` in a step that disallows file writes is rejected. `node:child_process` in a step that declares tools is rejected.
+- `run_code` program bodies are scanned for module literals. `node:fs` in a step that disallows file writes is rejected. `node:child_process` in a step that declares tools is rejected. The program container itself does not count as the step's work; its nested managed calls report separately.
+- A background shell job counts as work only if this step started it and a later `job_output` reports a successful exit. A job id left over from another step does not count.
 - A step marked `approval` cannot be advanced by `sop_step` until a human has run `/sop approve`.
 
 Three things make the gate survivable in practice:
@@ -141,7 +142,7 @@ Read this part before trusting it with anything.
 
 **The runtime text is Chinese.** Denial messages, the `sop_step` description, and the system-prompt rules are written in Chinese; that is the primary language for this project. An English checklist works, but the messages telling the model what it did wrong stay in Chinese. This README is the English companion, not the primary one.
 
-**Persistence is per session, in one JSON file.** Two processes restoring the same session id are arbitrated by a lock file. A read-only home directory turns persistence off with a warning; the gate keeps working.
+**Persistence is per session, in one JSON file.** Two processes restoring the same session id are arbitrated by a lock file. A read-only home directory turns persistence off with a warning; the gate keeps working. The snapshot records the checklist shape: if `tools`, `commands`, `witness`, or `approval` changed on reload or restore, the old step's declaration and work do not carry over; if the checklist file breaks while the session is away, the gate stays armed at step 1 from the snapshot instead of silently disarming.
 
 If you need enforcement that holds against a model actively trying to escape, put the allowlist in the OS or in a container. This plugin is for models that are trying to be helpful and sometimes cut corners.
 

@@ -62,8 +62,8 @@ function isDescriptorJoin(char, previous) {
 const RULES = [
   '## SOP Guard',
   '有些 skill 目录里附带 SOP.json 流程清单：每一步声明允许的工具，shell 步骤必须声明命令白名单，否则该步的 shell 会被拒绝。加载这种 skill 后，改文件、删除、跑命令的工具会按当前步骤的白名单校验。',
-  '开始每一步前调用 sop_step({"step":"<当前步骤 id>"}) 申报本步；申报对该步骤持续有效。申报下一步后，新的一步尚未申报，必须再调用一次 sop_step 申报它才能用工具。结束流程调用 sop_step({"step":"done","evidence":"..."})。结束和申报下一步都必须带 evidence（至少 8 个字符），本步声明了允许的工具时还要有一次成功的工具执行记录；结束流程额外要求本步已经申报。提前结束会记入主机日志。',
-  '不给参数调用 sop_step 可查看当前流程、步骤与白名单；同时装载多个清单时用 sop_step({"skill":"<名称>"}) 切换生效的流程。被拒绝时的错误信息会写明原因、当前步骤、允许的工具/命令、下一步和清单位置。读取类工具不受限制。当前步骤也会出现在运行时上下文（Current runtime context）里；那份是权威的，拿不准自己在第几步时以它为准。',
+  '开始每一步前调用 sop_step({"step":"<当前步骤 id>"}) 申报本步；申报对该步骤持续有效。申报下一步后，新的一步尚未申报，必须再调用一次 sop_step 申报它才能用工具。结束流程调用 sop_step({"step":"done","evidence":"..."})。结束和申报下一步都要求本步已申报，都必须带 evidence（至少 8 个字符），本步声明了允许的工具时还要有一次成功的工具执行记录。提前结束会记入主机日志。',
+  '不给参数调用 sop_step 可查看当前流程、步骤与白名单；同时装载多个清单时用 sop_step({"skill":"<名称>"}) 单独切换生效的流程，不要和 step 写在同一次调用里。被拒绝时的错误信息会写明原因、当前步骤、允许的工具/命令、下一步和清单位置。读取类工具不受限制。当前步骤也会出现在运行时上下文（Current runtime context）里；那份是权威的，拿不准自己在第几步时以它为准。',
   'run_code 的程序体同样受本步规则约束：程序体里出现 node:fs / node:child_process 等模块字面量时，若本步不允许改文件或有命令白名单，会被拒绝；要改文件、跑命令请用受管工具。标了 witness 的步骤不许改任何东西，但必须先用读取类工具看过依据（文件、日志、命令输出），再申报推进——只凭描述推进会被拒绝。标了 approval 的步骤要让用户运行 /sop approve 确认，你申报不了。清单写错或你不该再受它约束时，让用户运行 /sop off —— 只有用户能解除，你不要尝试绕过校验。',
 ].join('\n')
 
@@ -155,6 +155,23 @@ async function loadSop(dir, skillName) {
   return { kind: 'ready', sop: parsed.sop }
 }
 
+/** The shape of a checklist without run-time state. A step that keeps its id
+ * but changes its tools, commands, witness or approval is a different step:
+ * progress earned on the old shape must not satisfy the new one. */
+function checklistFingerprint(sop) {
+  return JSON.stringify({
+    gatedTools: sop.gatedTools ?? [],
+    steps: sop.steps.map((step) => ({
+      id: step.id,
+      title: step.title,
+      tools: step.tools,
+      commands: step.commands === undefined ? undefined : step.commands.map((entry) => entry.source),
+      witness: step.witness === true,
+      approval: step.approval === true,
+    })),
+  })
+}
+
 /** The parts of a flow that survive a process restart. Command patterns are
  * kept as their source text and recompiled, because a RegExp is not JSON. */
 function flowToJson(flow) {
@@ -165,6 +182,8 @@ function flowToJson(flow) {
     doneWork: flow.doneWork ?? 0,
     evidence: flow.evidence,
     observed: flow.observed ?? [],
+    gatedTools: flow.sop.gatedTools ?? [],
+    fingerprint: checklistFingerprint(flow.sop),
     steps: flow.sop.steps.map((step) => ({
       id: step.id,
       title: step.title,
@@ -193,14 +212,17 @@ function flowFromJson(json) {
     steps.push({ id: step.id, title: step.title, tools: step.tools, commands, witness: step.witness === true, approval: step.approval === true })
   }
   if (steps.length === 0) return undefined
+  const sop = { skill: json.skill, steps, gatedTools: json.gatedTools ?? [] }
   return {
     dir: json.dir,
-    sop: { skill: json.skill, steps, gatedTools: json.gatedTools ?? [] },
+    sop,
     index: json.index ?? 0,
     declared: json.declared === true,
     doneWork: json.doneWork ?? 0,
     evidence: json.evidence,
     observed: json.observed ?? [],
+    fingerprint: json.fingerprint ?? checklistFingerprint(sop),
+    pendingJobs: [],
   }
 }
 
@@ -313,11 +335,12 @@ async function restoreFlow(ctx, stateDir, key) {
   for (const [name, flow] of state.bySkill) {
     // The step the session had reached, by id: an index alone cannot be
     // trusted once the checklist on disk may have changed.
-    const reachedId = flow.sop.steps[flow.index]?.id
     const loaded = await loadSop(flow.dir, name)
     if (loaded.kind === 'ready') {
       const index = Math.min(flow.index, loaded.sop.steps.length - 1)
-      const same = loaded.sop.steps[index]?.id === reachedId
+      const same = flow.fingerprint === checklistFingerprint(loaded.sop)
+        && loaded.sop.steps[index]?.id === flow.sop.steps[flow.index]?.id
+      flow.fingerprint = checklistFingerprint(loaded.sop)
       flow.sop = loaded.sop
       flow.index = same ? index : 0
       // A resumed session has not declared anything: the declaration belongs
@@ -327,14 +350,26 @@ async function restoreFlow(ctx, stateDir, key) {
       flow.observed = []
       if (!same) {
         flow.evidence = undefined
+        flow.approved = false
         ctx.logger?.warn?.(
           `sop-guard: the checklist for "${name}" changed while the session was away; restarted at step 1`,
         )
       }
       continue
     }
-    // The checklist is gone or broken now: the persisted step cannot be trusted.
-    state.bySkill.delete(name)
+    // The checklist is gone or broken: keep the remembered gate rather than
+    // dropping it, so a missing or unreadable file cannot silently disarm the
+    // whole session. The host can still use /sop off.
+    flow.index = 0
+    flow.declared = false
+    flow.doneWork = 0
+    flow.observed = []
+    flow.approved = false
+    flow.evidence = undefined
+    flow.pendingJobs = []
+    ctx.logger?.warn?.(
+      `sop-guard: the checklist for "${name}" could not be read while the session was away; kept the flow at step 1: ${loaded.reason ?? 'missing'}`,
+    )
   }
   if (state.bySkill.size === 0) return undefined
   if (!state.bySkill.has(state.active)) state.active = state.bySkill.keys().next().value
@@ -412,6 +447,10 @@ function isToolAllowed(step, toolName) {
  * read counts: any successful call let `pwsh echo hi` satisfy it. A step that
  * names its own tools may still count them — the author opted in. */
 function isCommittable(step, toolName) {
+  // A program transport is a container, not work: its nested calls are gated
+  // individually and report their own results. Counting the container lets an
+  // empty program satisfy a step that required real work.
+  if (PROGRAM_TOOLS.includes(toolName)) return false
   if (step.witness !== true) return isToolAllowed(step, toolName)
   if (READ_TOOLS.includes(toolName)) return true
   return isToolAllowed(step, toolName) && (step.tools?.length ?? 0) > 0
@@ -837,6 +876,17 @@ function requireEvidence(args, kind) {
   return evidence
 }
 
+function requireDeclared(flow, kind) {
+  const step = flow.sop.steps[flow.index]
+  // Advancing or ending without declaring the current step would let a
+  // reasoning-only step be skipped on evidence alone.
+  if (flow.declared !== true) {
+    throw new Error(
+      `本步「${step.id}」还没有申报：先调用 sop_step({"step":"${step.id}"}) 申报本步，再${kind}；本次拒绝没有副作用。`,
+    )
+  }
+}
+
 function requireApproval(flow, kind) {
   const step = flow.sop.steps[flow.index]
   // `approval` is the one thing the model cannot produce on its own: only a
@@ -1007,13 +1057,21 @@ function findInherited(ctx, key, sessions) {
  * was created before the parent armed its checklist would otherwise run with
  * no gate at all, so the ancestor is looked up on every call instead of only
  * when the agent was announced. */
-function resolveSession(ctx, agent, sessions) {
+function resolveSession(ctx, agent, sessions, retired) {
   if (agent?.id === undefined) return undefined
   const key = String(agent.id)
+  // A disposed agent is gone: a late result must not re-arm it from a parent.
+  // A resume reuses the id with a new instance, so only the exact dead one is
+  // blocked; agent/created clears the marker before the new loop starts.
+  if (retired.get(key) === agent) return undefined
   const own = sessions.get(key)
   if (own !== undefined) return own
   const inherited = findInherited(ctx, key, sessions)
   if (inherited === undefined) return undefined
+  // A read-only path (context projection, guard, or a late result) may look up
+  // an inheritable flow before agent/created restores this session's own one.
+  // Mark it provisional so the restore wins instead of being skipped.
+  inherited.state.provisional = true
   sessions.set(key, inherited.state)
   ctx.logger.warn(`sop-guard: agent "${key}" inherited the armed SOP flow "${inherited.state.active}" from "${inherited.parentKey}"`)
   return inherited.state
@@ -1057,7 +1115,7 @@ export function apply(ctx, config) {
     text: (context) => {
       const agent = context.agent
       if (agent?.id === undefined) return ''
-      return renderStepContext(resolveSession(ctx, agent, sessions))
+      return renderStepContext(resolveSession(ctx, agent, sessions, retired))
     },
   })
 
@@ -1072,7 +1130,7 @@ export function apply(ctx, config) {
       handler: (invocation) => {
         const state = invocation.agent === undefined
           ? undefined
-          : resolveSession(ctx, invocation.agent, sessions)
+          : resolveSession(ctx, invocation.agent, sessions, retired)
         // The model can declare a step, but only a human at the keyboard can
         // confirm one. This is a distinct action from /sop off: approving
         // keeps the flow armed and lets the model advance exactly one step.
@@ -1139,12 +1197,12 @@ export function apply(ctx, config) {
   ctx.tools.register({
     name: 'sop_step',
     description:
-      '查看或申报当前 SOP 流程：不给参数返回当前流程、步骤与允许的工具/命令；给 step 申报当前步骤或它的下一步（申报下一步会自动推进，必须带 evidence；本步声明了工具时还需先有成功的工具执行；标了 approval 的步骤还要用户先运行 /sop approve；推进后新的一步需要单独申报）；step 为 "done" 结束流程，同样要先申报本步并满足推进门槛；给 skill 切换生效的流程。申报对该步骤持续有效，不按工具调用次数消耗。',
+      '查看或申报当前 SOP 流程：不给参数返回当前流程、步骤与允许的工具/命令；给 step 申报当前步骤或它的下一步（申报下一步会自动推进，必须带 evidence；本步声明了工具时还需先有成功的工具执行；标了 approval 的步骤还要用户先运行 /sop approve；推进后新的一步需要单独申报）；step 为 "done" 结束流程，同样要先申报本步并满足推进门槛；给 skill 单独切换生效的流程（不要和 step 同次给出）。申报对该步骤持续有效，不按工具调用次数消耗。',
     parameters: {
       type: 'object',
       properties: {
-        step: { type: 'string', description: '当前或下一步的 id；填 "done" 结束流程（也要先申报本步、满足推进门槛）；省略则只查询状态' },
-        skill: { type: 'string', description: '可选：切换到已装载的另一个流程' },
+        step: { type: 'string', description: '当前或下一步的 id；申报下一步要求本步已申报并带 evidence；填 "done" 结束流程，门槛相同；省略则只查询状态' },
+        skill: { type: 'string', description: '可选：单独切换到已装载的另一个流程；不能与 step 同次给出' },
         action: { type: 'string', description: '可选：接下来要用的工具名，提前校验本步是否允许' },
         evidence: { type: 'string', description: '申报下一步时必填：上一步观察到的结果，至少 8 个字符' },
       },
@@ -1156,7 +1214,7 @@ export function apply(ctx, config) {
     },
     execute(args, exec) {
       const id = exec.agent?.id
-      const state = id === undefined ? undefined : resolveSession(ctx, exec.agent, sessions)
+      const state = id === undefined ? undefined : resolveSession(ctx, exec.agent, sessions, retired)
       if (state === undefined) {
         const pending = notices.get(String(id)) ?? []
         const suffix = pending.length > 0 ? `\n${pending.join('\n')}` : ''
@@ -1165,6 +1223,9 @@ export function apply(ctx, config) {
         throw new Error(`当前会话没有已装载的 SOP：先调用 skill 工具加载带 SOP.json 的 skill。${suffix}`)
       }
       if (typeof args.skill === 'string') {
+        if (args.step !== undefined) {
+          throw new Error('切换流程和申报步骤要分两次 sop_step 调用；本次拒绝没有副作用。')
+        }
         if (!state.bySkill.has(args.skill)) {
           throw new Error(`流程「${args.skill}」尚未装载：已装载 ${[...state.bySkill.keys()].join(', ')}。`)
         }
@@ -1179,12 +1240,7 @@ export function apply(ctx, config) {
           // Ending a flow drops the whole gate, so it must not be cheaper than
           // advancing one step: the step has to be declared, and work-claiming
           // steps need a run the host actually saw.
-          if (flow.declared !== true) {
-            const step = flow.sop.steps[flow.index]
-            throw new Error(
-              `本步「${step.id}」还没有申报：先调用 sop_step({"step":"${step.id}"}) 申报本步，再结束流程；本次拒绝没有副作用。`,
-            )
-          }
+          requireDeclared(flow, '结束流程')
           requireObservedWork(flow, '提前结束流程')
           const last = flow.index === flow.sop.steps.length - 1
           ctx.logger.warn(
@@ -1224,6 +1280,7 @@ export function apply(ctx, config) {
         )
       }
       if (target === next?.id) {
+        requireDeclared(flow, '申报下一步')
         const evidence = requireEvidence(args, '申报下一步')
         requireApproval(flow, '申报下一步')
         requireObservedWork(flow, '申报下一步')
@@ -1244,6 +1301,7 @@ export function apply(ctx, config) {
         // declaration, otherwise advancing silently carries the permission
         // over and the model can skip sop_step for the rest of the flow.
         flow.declared = false
+        flow.pendingJobs = []
         persist(String(id))
       } else {
         if (typeof args.action === 'string' && isGateTool(args.action, flow.sop) && !isToolAllowed(current, args.action)) {
@@ -1259,7 +1317,7 @@ export function apply(ctx, config) {
   ctx.tools.guard((exec) => {
     const id = exec.agent?.id
     if (id === undefined) return undefined
-    const state = resolveSession(ctx, exec.agent, sessions)
+    const state = resolveSession(ctx, exec.agent, sessions, retired)
     const flow = state === undefined || state.active === null ? undefined : state.bySkill.get(state.active)
     if (flow === undefined) return undefined
     if (!isGateTool(exec.name, flow.sop)) return undefined
@@ -1282,7 +1340,7 @@ export function apply(ctx, config) {
   ctx.on('tools/result', (exec, result) => {
     const resultKey = exec.agent?.id === undefined ? undefined : String(exec.agent.id)
     if (result.isError === false && resultKey !== undefined && exec.name !== 'skill' && exec.name !== 'sop_step') {
-      const tracked = resolveSession(ctx, exec.agent, sessions)
+      const tracked = resolveSession(ctx, exec.agent, sessions, retired)
       const active = tracked === undefined || tracked.active === null ? undefined : tracked.bySkill.get(tracked.active)
       // A shell command that exited non-zero is a report, not a success: the
       // tool reports it without an error, so only the exit code tells. A
@@ -1290,13 +1348,23 @@ export function apply(ctx, config) {
       // still going, so it is not observed work either.
       const failed = isFailedResult(exec, result)
       const unsettled = isUnsettledResult(exec, result)
-      // A background run settles later, and the model collects the verdict
-      // with `job_output`. That read carries the job projection, whose detail
-      // holds the exit code, so the finished work can still be observed.
+      // A background run settles later via `job_output`. Remember which job
+      // this step launched, so a verdict from another step cannot be spent as
+      // this step's work. The stored tool name is used, not the job projection.
+      if (unsettled && active !== undefined && active.declared) {
+        const jobId = result.value?.jobId
+        if (typeof jobId === 'string' && jobId !== '') {
+          if (active.pendingJobs === undefined) active.pendingJobs = []
+          active.pendingJobs.push({ jobId, toolName: exec.name, index: active.index })
+        }
+      }
       const job = exec.name === 'job_output' ? result.value?.job : undefined
       const verdict = job === undefined ? undefined : jobOutcome(job)
-      const settledJob = verdict === 'ok' && typeof job.kind === 'string' ? job.kind : undefined
-      const observedName = settledJob ?? exec.name
+      const pending = active?.pendingJobs ?? []
+      const claimed = verdict === 'ok' && job !== undefined
+        ? pending.find((entry) => entry.jobId === job.id && entry.index === active.index)
+        : undefined
+      const observedName = claimed?.toolName ?? exec.name
       if (!failed && !unsettled && active !== undefined && active.declared && isCommittable(active.sop.steps[active.index], observedName)) {
         // Count every tool the step allows, not only the gated ones: a step may
         // declare only ungated tools (for example `read`), and those calls are
@@ -1306,6 +1374,7 @@ export function apply(ctx, config) {
         // tool succeed, which is what an audit compares against the evidence.
         if (active.observed === undefined) active.observed = []
         active.observed.push(observedName)
+        if (claimed !== undefined) active.pendingJobs = pending.filter((entry) => entry !== claimed)
       }
     }
   })
@@ -1327,6 +1396,9 @@ export function apply(ctx, config) {
     if (agent?.id === undefined) return
     const key = String(agent.id)
     retired.delete(key)
+    // A read-only lookup may have cached an inherited flow before this event.
+    // Drop that provisional copy so the session's own persisted flow wins.
+    if (sessions.get(key)?.provisional === true) sessions.delete(key)
     // A resumed session starts with an empty map: restore what it had reached.
     if (stateDir !== undefined && !sessions.has(key)) {
       const state = await restoreFlow(ctx, stateDir, key)
@@ -1388,16 +1460,16 @@ export function apply(ctx, config) {
     // step with it.
     let flow
     if (previous === undefined) {
-      flow = { dir: base.path, sop: loaded.sop, index: 0, declared: false, doneWork: 0, evidence: undefined }
+      flow = { dir: base.path, sop: loaded.sop, index: 0, declared: false, doneWork: 0, observed: [], approved: false, evidence: undefined, fingerprint: checklistFingerprint(loaded.sop), pendingJobs: [] }
     } else {
       const index = Math.min(previous.index, loaded.sop.steps.length - 1)
-      const reachedId = previous.sop.steps[previous.index]?.id
-      const same = loaded.sop.steps[index]?.id === reachedId
+      const fingerprint = checklistFingerprint(loaded.sop)
+      const same = previous.fingerprint === fingerprint
       if (same) {
-        flow = { ...previous, dir: base.path, sop: loaded.sop, index }
+        flow = { ...previous, dir: base.path, sop: loaded.sop, index, fingerprint }
       } else {
         ctx.logger.warn(`sop-guard: the checklist for "${skillName}" changed while it was loaded; restarted at step 1`)
-        flow = { dir: base.path, sop: loaded.sop, index: 0, declared: false, doneWork: 0, observed: [], approved: false, evidence: undefined }
+        flow = { dir: base.path, sop: loaded.sop, index: 0, declared: false, doneWork: 0, observed: [], approved: false, evidence: undefined, fingerprint, pendingJobs: [] }
       }
     }
     state.bySkill.set(skillName, flow)
